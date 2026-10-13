@@ -234,7 +234,7 @@ fun LibraryGridView(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 14.dp, vertical = 8.dp)
-                                .clickable { viewModel.drillDownYear(section.year) },
+                                .glassClickable { viewModel.drillDownYear(section.year) },
                             cornerRadius = 16.dp
                         ) {
                             Row(
@@ -260,7 +260,7 @@ fun LibraryGridView(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 14.dp, vertical = 8.dp)
-                                .clickable { viewModel.drillDownMonth(section.month) },
+                                .glassClickable { viewModel.drillDownMonth(section.month) },
                             cornerRadius = 14.dp
                         ) {
                             Row(
@@ -284,7 +284,7 @@ fun LibraryGridView(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 14.dp, vertical = 8.dp)
-                                .clickable { viewModel.drillDownMonth(section.month) },
+                                .glassClickable { viewModel.drillDownMonth(section.month) },
                             cornerRadius = 14.dp
                         ) {
                             Row(
@@ -345,7 +345,7 @@ fun LibraryGridView(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .weight(1f)
-                            .clickable {
+                            .glassClickable {
                                 when {
                                     selectedMonth != null && selectedYear != null -> {
                                         viewModel.drillDownYear(selectedYear!!)
@@ -582,7 +582,7 @@ fun LibraryGridView(
                             ) {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.clickable {
+                                    modifier = Modifier.glassClickable {
                                         viewModel.copyItemToClipboard(cell)
                                         longPressedItem = null
                                     }
@@ -594,7 +594,7 @@ fun LibraryGridView(
 
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.clickable {
+                                    modifier = Modifier.glassClickable {
                                         viewModel.duplicateItem(cell)
                                         longPressedItem = null
                                     }
@@ -606,7 +606,7 @@ fun LibraryGridView(
 
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.clickable {
+                                    modifier = Modifier.glassClickable {
                                         viewModel.hideItem(cell)
                                         longPressedItem = null
                                         snackbarScope.launch {
@@ -632,7 +632,7 @@ fun LibraryGridView(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
+                                    .glassClickable {
                                         albumNameInput = ""
                                 showAddAlbumDialog = true
                                     }
@@ -653,7 +653,7 @@ fun LibraryGridView(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
+                                    .glassClickable {
                                         adjustTitle = cell.displayName
                                         adjustLocation = cell.location ?: ""
                                         val fmt = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
@@ -721,7 +721,7 @@ fun LibraryGridView(
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.08f))
                             .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
-                            .clickable { showAddAlbumDialog = false }
+                            .glassClickable { showAddAlbumDialog = false }
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -767,7 +767,7 @@ fun LibraryGridView(
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.18f))
                             .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
-                            .clickable {
+                            .glassClickable {
                                 val item = longPressedItem ?: return@clickable
                                 val epochDate = try {
                                     val df = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
@@ -796,7 +796,7 @@ fun LibraryGridView(
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.08f))
                             .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
-                            .clickable { showAdjustMetadataDialog = false }
+                            .glassClickable { showAdjustMetadataDialog = false }
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                         contentAlignment = Alignment.Center
                     ) {

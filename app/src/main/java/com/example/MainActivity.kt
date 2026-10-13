@@ -326,17 +326,7 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                 ) {
                     AnimatedContent(
                         targetState = currentTab,
-                        transitionSpec = {
-                            val dir = if (targetState == "Fototeca") -1 else 1
-                            (slideInHorizontally(
-                                animationSpec = tween(320, easing = FastOutSlowInEasing),
-                                initialOffsetX = { fullWidth -> dir * fullWidth / 6 }
-                            ) + fadeIn(tween(240))) togetherWith
-                            (slideOutHorizontally(
-                                animationSpec = tween(320, easing = FastOutSlowInEasing),
-                                targetOffsetX = { fullWidth -> -dir * fullWidth / 6 }
-                            ) + fadeOut(tween(160)))
-                        },
+                        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
                         label = "tabTransition"
                     ) { tab ->
                         when (tab) {
