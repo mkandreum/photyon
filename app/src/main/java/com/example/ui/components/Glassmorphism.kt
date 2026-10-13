@@ -38,6 +38,7 @@ import com.example.ui.theme.GlassBarBorder
 import com.example.ui.theme.GlassSpecular
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin

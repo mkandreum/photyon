@@ -745,7 +745,7 @@ private fun BannerButton(label: String, filled: Boolean, onClick: () -> Unit) {
             .clip(shape)
             .background(if (filled) Color(0xFF0A84FF) else Color.White.copy(alpha = 0.12f))
             .border(1.dp, Color.White.copy(alpha = if (filled) 0.25f else 0.18f), shape)
-            .glassClickable(onClick)
+            .glassClickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center
     ) {
