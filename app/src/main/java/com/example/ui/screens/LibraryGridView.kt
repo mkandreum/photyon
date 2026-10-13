@@ -57,6 +57,8 @@ import com.example.ui.theme.GlassBarBorder
 import kotlinx.coroutines.launch
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInRoot
+import com.example.ui.theme.snappySpring
+import androidx.compose.animation.animateColorAsState
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -94,9 +96,10 @@ fun LibraryGridView(
         onScrollStateChanged(isScrollActive)
     }
 
-    LaunchedEffect(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset) {
-        onIsAtTop(gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset < 50)
+    val isAtTop by remember {
+        derivedStateOf { gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset < 50 }
     }
+    LaunchedEffect(isAtTop) { onIsAtTop(isAtTop) }
 
     LaunchedEffect(selectedYear, selectedMonth, isSearchActive) {
         if (selectedYear != null || selectedMonth != null || isSearchActive) {
@@ -115,6 +118,8 @@ fun LibraryGridView(
 
     // Context long-press custom glass overlay menu variables
     var longPressedItem by remember { mutableStateOf<MediaItem?>(null) }
+    var lastLongPressed by remember { mutableStateOf<MediaItem?>(null) }
+    if (longPressedItem != null) lastLongPressed = longPressedItem
 
     BackHandler(enabled = isSelectionMode) {
         viewModel.toggleSelectionMode()
@@ -136,7 +141,7 @@ fun LibraryGridView(
 
     // Shimmer loading animation state
     val shimmerTransition = rememberInfiniteTransition(label = "shimmer")
-    val shimmerAlpha by shimmerTransition.animateFloat(
+    val shimmerAlphaState = shimmerTransition.animateFloat(
         initialValue = 0.15f,
         targetValue = 0.45f,
         animationSpec = infiniteRepeatable(
@@ -145,6 +150,7 @@ fun LibraryGridView(
         ),
         label = "shimmerAlpha"
     )
+    val shimmerAlpha: () -> Float = { shimmerAlphaState.value }
 
     // Snackbar for undo actions
     val snackbarHostState = remember { SnackbarHostState() }
@@ -164,6 +170,16 @@ fun LibraryGridView(
         else -> 4
     }
 
+    val flatItems = remember(items, reversedItems, gridMode, selectedYear, selectedMonth, groupedMonths, drilledDownMonths) {
+        when {
+            gridMode == "Meses" && selectedMonth != null ->
+                (groupedMonths.find { it.month == selectedMonth }?.items ?: emptyList()).reversed()
+            gridMode == "Años" && selectedYear != null && selectedMonth != null ->
+                (drilledDownMonths.find { it.month == selectedMonth }?.items ?: emptyList()).reversed()
+            else -> reversedItems
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -179,7 +195,7 @@ fun LibraryGridView(
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             if (items.isEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
+                item(key = "empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty") {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -213,7 +229,7 @@ fun LibraryGridView(
                 }
             } else if (gridMode == "Años" && selectedYear == null) {
                 groupedYears.forEach { section ->
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(key = "y_${section.year}", span = { GridItemSpan(maxLineSpan) }, contentType = "section") {
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -239,7 +255,7 @@ fun LibraryGridView(
                 }
             } else if (gridMode == "Años" && selectedYear != null && selectedMonth == null) {
                 drilledDownMonths.forEach { section ->
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(key = "dm_${section.month}", span = { GridItemSpan(maxLineSpan) }, contentType = "section") {
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -263,7 +279,7 @@ fun LibraryGridView(
                 }
             } else if (gridMode == "Meses" && selectedMonth == null) {
                 groupedMonths.forEach { section ->
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(key = "m_${section.month}", span = { GridItemSpan(maxLineSpan) }, contentType = "section") {
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -285,44 +301,8 @@ fun LibraryGridView(
                         }
                     }
                 }
-            } else if (gridMode == "Meses" && selectedMonth != null) {
-                val monthItems = groupedMonths.find { it.month == selectedMonth }?.items ?: emptyList()
-                items(monthItems.reversed(), key = { it.id }) { item ->
-                    GalleryGridItemCell(
-                        item = item,
-                        isSelected = selectedItems.contains(item.id),
-                        isSelectionMode = isSelectionMode,
-                        gridMode = "Todo",
-                        cardHeight = 90.dp,
-                        shimmerAlpha = shimmerAlpha,
-                        onItemClick = {
-                            if (isSelectionMode) viewModel.toggleItemSelection(item.id)
-                            else viewModel.setDetailItem(item)
-                        },
-                        onItemLongClick = { longPressedItem = item },
-                        viewModel = viewModel
-                    )
-                }
-            } else if (gridMode == "Años" && selectedYear != null && selectedMonth != null) {
-                val monthItems = drilledDownMonths.find { it.month == selectedMonth }?.items ?: emptyList()
-                items(monthItems.reversed(), key = { it.id }) { item ->
-                    GalleryGridItemCell(
-                        item = item,
-                        isSelected = selectedItems.contains(item.id),
-                        isSelectionMode = isSelectionMode,
-                        gridMode = "Todo",
-                        cardHeight = 90.dp,
-                        shimmerAlpha = shimmerAlpha,
-                        onItemClick = {
-                            if (isSelectionMode) viewModel.toggleItemSelection(item.id)
-                            else viewModel.setDetailItem(item)
-                        },
-                        onItemLongClick = { longPressedItem = item },
-                        viewModel = viewModel
-                    )
-                }
             } else {
-                items(reversedItems, key = { it.id }) { item ->
+                items(flatItems, key = { it.id }, contentType = { "media" }) { item ->
                     GalleryGridItemCell(
                         item = item,
                         isSelected = selectedItems.contains(item.id),
@@ -447,6 +427,13 @@ fun LibraryGridView(
                     Box(
                         modifier = Modifier
                             .height(48.dp)
+                            .onGloballyPositioned { coords ->
+                                if (coords.isAttached) {
+                                    onSelectBtnRectChanged(coords.boundsInRoot())
+                                } else {
+                                    onSelectBtnRectChanged(androidx.compose.ui.geometry.Rect.Zero)
+                                }
+                            }
                             .clip(RoundedCornerShape(24.dp))
                             .background(
                                 if (isSelectionMode) Color.White
@@ -458,14 +445,7 @@ fun LibraryGridView(
                                 RoundedCornerShape(24.dp)
                             )
                             .clickable { viewModel.toggleSelectionMode() }
-                            .padding(horizontal = 40.dp, vertical = 0.dp)
-                            .onGloballyPositioned { coords ->
-                                if (coords.isAttached) {
-                                    onSelectBtnRectChanged(coords.boundsInRoot())
-                                } else {
-                                    onSelectBtnRectChanged(androidx.compose.ui.geometry.Rect.Zero)
-                                }
-                            },
+                            .padding(horizontal = 40.dp, vertical = 0.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -543,7 +523,7 @@ fun LibraryGridView(
             exit = fadeOut(animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f)),
             modifier = Modifier.fillMaxSize()
         ) {
-            val cell = longPressedItem ?: return@AnimatedVisibility
+            val cell = lastLongPressed ?: return@AnimatedVisibility
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -653,7 +633,8 @@ fun LibraryGridView(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        showAddAlbumDialog = true
+                                        albumNameInput = ""
+                                showAddAlbumDialog = true
                                     }
                                     .padding(vertical = 4.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -717,9 +698,10 @@ fun LibraryGridView(
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
+                            .graphicsLayer { alpha = if (albumNameInput.isNotBlank()) 1f else 0.4f }
                             .background(Color.White.copy(alpha = 0.18f))
                             .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
-                            .clickable {
+                            .clickable(enabled = albumNameInput.isNotBlank()) {
                                 val item = longPressedItem ?: return@clickable
                                 if (albumNameInput.isNotBlank()) {
                                     viewModel.addToAlbum(item, albumNameInput.trim())
@@ -842,7 +824,7 @@ private fun GalleryGridItemCell(
     isSelectionMode: Boolean,
     gridMode: String,
     cardHeight: Dp,
-    shimmerAlpha: Float,
+    shimmerAlpha: () -> Float,
     onItemClick: () -> Unit,
     onItemLongClick: () -> Unit,
     viewModel: GalleryViewModel
@@ -852,10 +834,7 @@ private fun GalleryGridItemCell(
     val isPressed by interactionSource.collectIsPressedAsState()
     val itemPressScale by animateFloatAsState(
         targetValue = if (isPressed) 0.95f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
+        animationSpec = snappySpring,
         label = "itemPressScale"
     )
     Box(
@@ -876,7 +855,7 @@ private fun GalleryGridItemCell(
                 modifier = Modifier
                     .fillMaxSize()
                     .drawBehind {
-                        drawRect(Color.DarkGray.copy(alpha = shimmerAlpha))
+                        drawRect(Color.DarkGray.copy(alpha = shimmerAlpha()))
                     }
             )
         }
@@ -990,7 +969,7 @@ private fun GalleryGridItemCell(
                             scaleY = itemPressScale
                         }
                         .drawBehind {
-                            drawRect(Color.DarkGray.copy(alpha = shimmerAlpha))
+                            drawRect(Color.DarkGray.copy(alpha = shimmerAlpha()))
                         }
                 )
             }
@@ -1000,7 +979,7 @@ private fun GalleryGridItemCell(
                 ImageRequest.Builder(context)
                     .data(imageUri)
                     .size(thumbnailSize)
-                    .crossfade(true)
+                    .crossfade(120)
                     .build()
             }
             AsyncImage(
@@ -1019,10 +998,14 @@ private fun GalleryGridItemCell(
         }
 
         if (isSelectionMode) {
+            val overlayColor by animateColorAsState(
+                if (isSelected) Color.White.copy(alpha = 0.25f) else Color.Transparent,
+                animationSpec = tween(120), label = "selOverlay"
+            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(if (isSelected) Color.White.copy(alpha = 0.25f) else Color.Transparent)
+                    .background(overlayColor)
             )
             Box(
                 modifier = Modifier

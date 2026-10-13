@@ -13,6 +13,8 @@ val GlassBacking = Color(0x22FFFFFF)
 /** Unified semi-transparent dark glass fill for all floating bars and pills */
 val GlassBarFill = Color(0x44141414)
 val GlassBarBorder = Color(0x24FFFFFF)
+/** Top-edge specular rim used by glass borders */
+val GlassSpecular = Color(0x55FFFFFF)
 val GlassSelectorFill = Color(0x0FFFFFFF)
 val GlowCrimson = Color(0xFFFF453A)
 val GlowGold = Color(0xFFFFD60A)

@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,10 +41,17 @@ import androidx.compose.ui.platform.LocalContext
 import com.example.data.MediaItem
 import com.example.ui.GalleryViewModel
 import com.example.ui.components.GlassCard
+import com.example.ui.components.glassClickable
 import com.example.ui.theme.GlassBarFill
 import com.example.ui.theme.GlassBarBorder
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Build
+import android.widget.Toast
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.composed
+import androidx.compose.ui.graphics.graphicsLayer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,81 +65,105 @@ fun CollectionsView(
     val customAlbums by viewModel.customAlbums.collectAsStateWithLifecycle()
     val hiddenItems by viewModel.hiddenItems.collectAsStateWithLifecycle()
 
-    // Sub-view album viewer coordinates
-    var selectedSubAlbumName by remember { mutableStateOf<String?>(null) }
-    var selectedSubAlbumItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    // Sub-view album viewer: only a reference is kept; items are resolved from live state so
+    // favorites / hidden / album changes show up immediately (no stale snapshot).
+    var openAlbum by remember { mutableStateOf<AlbumRef?>(null) }
+    val recentItems = remember(rawItems) { rawItems.filter { !it.isHidden } }
+    fun resolveAlbum(ref: AlbumRef): List<MediaItem> = when (ref.kind) {
+        AlbumKind.Favorites -> favorites
+        AlbumKind.Hidden -> hiddenItems
+        AlbumKind.Recent -> recentItems.take(15)
+        AlbumKind.Memory -> memories.firstOrNull { it.location == ref.name }?.items.orEmpty()
+        AlbumKind.Custom -> customAlbums[ref.name].orEmpty()
+    }
 
     // MoreHoriz dropdown menu state
     var showMoreMenu by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
+    val appContext = LocalContext.current
 
-    BackHandler(enabled = selectedSubAlbumName != null) {
-        selectedSubAlbumName = null
+    BackHandler(enabled = openAlbum != null) {
+        openAlbum = null
+    }
+
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            confirmButton = { TextButton(onClick = { showAbout = false }) { Text("Cerrar", color = Color(0xFF0A84FF)) } },
+            title = { Text("Liquid Gallery", color = Color.White) },
+            text = { Text("${rawItems.size} elementos en tu galería.", color = Color.White.copy(alpha = 0.75f)) },
+            containerColor = Color(0xF21C1C1E),
+            shape = RoundedCornerShape(24.dp)
+        )
     }
 
     var showBiometricDialog by remember { mutableStateOf(false) }
 
     if (showBiometricDialog) {
-        val context = LocalContext.current
         DisposableEffect(Unit) {
             val cancellationSignal = android.os.CancellationSignal()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val executor = context.mainExecutor
-                val biometricPrompt = BiometricPrompt.Builder(context)
-                    .setTitle("Acceso a Ocultos")
-                    .setSubtitle("Identifícate con tu huella")
-                    .setNegativeButton("Cancelar", executor) { _, _ -> showBiometricDialog = false }
-                    .build()
+            val executor = appContext.mainExecutor
+            val authenticators = android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            val biometricPrompt = BiometricPrompt.Builder(appContext)
+                .setTitle("Acceso a Ocultos")
+                .setSubtitle("Identifícate para continuar")
+                .setAllowedAuthenticators(authenticators)
+                .build()
+            try {
                 biometricPrompt.authenticate(
                     cancellationSignal, executor,
                     object : BiometricPrompt.AuthenticationCallback() {
                         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                             showBiometricDialog = false
-                            selectedSubAlbumName = "Ocultos"
-                            selectedSubAlbumItems = hiddenItems
+                            openAlbum = AlbumRef(AlbumKind.Hidden, "", "Ocultos")
                         }
                         override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                             showBiometricDialog = false
+                            if (errorCode != BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED &&
+                                errorCode != BiometricPrompt.BIOMETRIC_ERROR_CANCELED
+                            ) {
+                                Toast.makeText(appContext, errString, Toast.LENGTH_SHORT).show()
+                            }
                         }
-                        override fun onAuthenticationFailed() {}
                     }
                 )
-            } else {
+            } catch (e: Exception) {
                 showBiometricDialog = false
-                selectedSubAlbumName = "Ocultos"
-                selectedSubAlbumItems = hiddenItems
+                Toast.makeText(appContext, "No se pudo iniciar la autenticación", Toast.LENGTH_SHORT).show()
             }
-            onDispose {
-                cancellationSignal.cancel()
-            }
+            onDispose { cancellationSignal.cancel() }
         }
     }
 
     AnimatedContent(
-        targetState = selectedSubAlbumName,
+        targetState = openAlbum,
         transitionSpec = {
             if (targetState != null) {
                 (slideInHorizontally(
-                    animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f),
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
                     initialOffsetX = { it / 3 }
-                ) + fadeIn(animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f))) togetherWith
+                ) + fadeIn(animationSpec = tween(300, easing = FastOutSlowInEasing))) togetherWith
                 (slideOutHorizontally(
-                    animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f),
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
                     targetOffsetX = { -it / 3 }
-                ) + fadeOut(animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f)))
+                ) + fadeOut(animationSpec = tween(300, easing = FastOutSlowInEasing)))
             } else {
                 (slideInHorizontally(
-                    animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f),
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
                     initialOffsetX = { -it / 3 }
-                ) + fadeIn(animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f))) togetherWith
+                ) + fadeIn(animationSpec = tween(300, easing = FastOutSlowInEasing))) togetherWith
                 (slideOutHorizontally(
-                    animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f),
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
                     targetOffsetX = { it / 3 }
-                ) + fadeOut(animationSpec = spring(dampingRatio = 0.5f, stiffness = 350f)))
+                ) + fadeOut(animationSpec = tween(300, easing = FastOutSlowInEasing)))
             }
         },
-        label = "subAlbumTransition"
+        contentKey = { it?.let { r -> "${r.kind}:${r.name}" } },
+        label = "subAlbumTransition2"
     ) { subAlbum ->
         if (subAlbum != null) {
+        val selectedSubAlbumItems = resolveAlbum(subAlbum)
         // Sub Grid album inspector screen!
         Column(
             modifier = modifier
@@ -145,7 +178,7 @@ fun CollectionsView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = { selectedSubAlbumName = null },
+                    onClick = { openAlbum = null },
                     modifier = Modifier
                         .size(40.dp)
                         .clip(CircleShape)
@@ -157,7 +190,7 @@ fun CollectionsView(
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = selectedSubAlbumName ?: "Álbum",
+                        text = subAlbum.title,
                         color = Color.White,
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Bold
@@ -182,11 +215,11 @@ fun CollectionsView(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    items(selectedSubAlbumItems, key = { it.id }) { item ->
+                    items(selectedSubAlbumItems, key = { it.id }, contentType = { "media" }) { item ->
                         Box(
                             modifier = Modifier
                                 .aspectRatio(1f)
-                                .clickable { viewModel.setDetailItem(item, selectedSubAlbumItems) }
+                                .glassClickable(pressedScale = 0.97f) { viewModel.setDetailItem(item, selectedSubAlbumItems) }
                         ) {
                             val context = LocalContext.current
                             val imageRequest = remember(item.uri) {
@@ -216,7 +249,7 @@ fun CollectionsView(
             contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             // Header bar
-            item {
+            item(key = "header", contentType = "header") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -245,32 +278,42 @@ fun CollectionsView(
                     Box {
                         Box(
                             modifier = Modifier
-                                .size(34.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(GlassBarFill)
                                 .border(1.dp, GlassBarBorder, CircleShape)
-                                .clickable { showMoreMenu = true },
+                                .glassClickable { showMoreMenu = true },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.MoreHoriz, contentDescription = "Más opciones", tint = Color.White)
+                            Icon(Icons.Default.MoreHoriz, contentDescription = "Más opciones", tint = Color.White, modifier = Modifier.size(22.dp))
                         }
 
                         DropdownMenu(
                             expanded = showMoreMenu,
                             onDismissRequest = { showMoreMenu = false },
                             modifier = Modifier
-                                .background(Color(0xCC1C1C1E))
-                                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                                .background(Color(0xF21C1C1E))
+                                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(12.dp))
                         ) {
                             DropdownMenuItem(
                                 text = { Text("Ajustes", color = Color.White) },
                                 leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, tint = Color.White) },
-                                onClick = { showMoreMenu = false }
+                                onClick = {
+                                    showMoreMenu = false
+                                    try {
+                                        appContext.startActivity(
+                                            android.content.Intent(
+                                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                android.net.Uri.fromParts("package", appContext.packageName, null)
+                                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    } catch (_: Exception) {}
+                                }
                             )
                             DropdownMenuItem(
                                 text = { Text("Acerca de", color = Color.White) },
                                 leadingIcon = { Icon(Icons.Default.Info, contentDescription = null, tint = Color.White) },
-                                onClick = { showMoreMenu = false }
+                                onClick = { showMoreMenu = false; showAbout = true }
                             )
                         }
                     }
@@ -278,7 +321,7 @@ fun CollectionsView(
             }
 
             // Memories section ("Recuerdos" Horizontal List with Play buttons)
-            item {
+            item(key = "memories", contentType = "memories") {
                 Column(modifier = Modifier.padding(vertical = 16.dp).animateItem()) {
                     Row(
                         modifier = Modifier
@@ -314,15 +357,14 @@ fun CollectionsView(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            items(memories) { group ->
+                            items(memories, key = { it.location }, contentType = { "memory" }) { group ->
                                 Box(
                                     modifier = Modifier
                                         .width(220.dp)
                                         .height(260.dp)
                                         .clip(RoundedCornerShape(24.dp))
-                                        .clickable {
-                                            selectedSubAlbumName = "Recuerdos: ${group.location}"
-                                            selectedSubAlbumItems = group.items
+                                        .glassClickable(pressedScale = 0.97f) {
+                                            openAlbum = AlbumRef(AlbumKind.Memory, group.location, "Recuerdos: ${group.location}")
                                         }
                                 ) {
                                     val context = LocalContext.current
@@ -397,7 +439,7 @@ fun CollectionsView(
             }
 
             // FIXED SECTION ("Fijadas" horizontal scroll: Favorites, Captured, Map coordinates)
-            item {
+            item(key = "pinned", contentType = "pinned") {
                 Column(modifier = Modifier.padding(vertical = 12.dp).animateItem()) {
                     Row(
                         modifier = Modifier
@@ -421,13 +463,12 @@ fun CollectionsView(
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         // Card A: Favorites ("Favoritos")
-                        item {
+                        item(key = "pin-fav") {
                             GlassCard(
                                 modifier = Modifier
                                     .size(120.dp)
-                                    .clickable {
-                                        selectedSubAlbumName = "Favoritos"
-                                        selectedSubAlbumItems = favorites
+                                    .glassClickable(pressedScale = 0.96f) {
+                                        openAlbum = AlbumRef(AlbumKind.Favorites, "", "Favoritos")
                                     },
                                 cornerRadius = 20.dp
                             ) {
@@ -479,20 +520,19 @@ fun CollectionsView(
                         }
 
                         // Card B: Guardados recientemente
-                        item {
-                            val recentCount = rawItems.filter { !it.isHidden }.size.coerceAtMost(99)
+                        item(key = "pin-recent") {
+                            val recentCount = recentItems.size.coerceAtMost(99)
                             GlassCard(
                                 modifier = Modifier
                                     .size(120.dp)
-                                    .clickable {
-                                        selectedSubAlbumName = "Guardados recientemente"
-                                        selectedSubAlbumItems = rawItems.filter { !it.isHidden }.take(15)
+                                    .glassClickable(pressedScale = 0.96f) {
+                                        openAlbum = AlbumRef(AlbumKind.Recent, "", "Guardados recientemente")
                                     },
                                 cornerRadius = 20.dp
                             ) {
-                                if (rawItems.isNotEmpty()) {
+                                if (recentItems.isNotEmpty()) {
                                     val context = LocalContext.current
-                                    val firstItemUri = rawItems.first().uri
+                                    val firstItemUri = recentItems.first().uri
                                     val imageRequest = remember(firstItemUri) {
                                         ImageRequest.Builder(context)
                                             .data(firstItemUri)
@@ -553,40 +593,11 @@ fun CollectionsView(
                         }
 
                         // Card C: Mapa
-                        item {
-                            val mapContext = LocalContext.current
+                        item(key = "pin-map") {
                             GlassCard(
                                 modifier = Modifier
                                     .size(120.dp)
-                                    .clickable {
-                                        val itemsWithLocation = rawItems.filter { !it.isHidden && it.location != null }
-                                        if (itemsWithLocation.isNotEmpty()) {
-                                            val uriBuilder = StringBuilder("https://www.google.com/maps/dir/?api=1")
-                                            itemsWithLocation.take(25).forEachIndexed { index, item ->
-                                                val coords = item.location ?: return@forEachIndexed
-                                                if (coords.contains(",")) {
-                                                    val parts = coords.split(",")
-                                                    if (parts.size == 2) {
-                                                        val lat = parts[0].trim()
-                                                        val lon = parts[1].trim()
-                                                        uriBuilder.append("&waypoint$index=$lat,$lon")
-                                                    }
-                                                }
-                                            }
-                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                                data = android.net.Uri.parse(uriBuilder.toString())
-                                                setPackage("com.google.android.apps.maps")
-                                            }
-                                            try {
-                                                mapContext.startActivity(intent)
-                                            } catch (e: Exception) {
-                                                val webIntent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                                    data = android.net.Uri.parse(uriBuilder.toString())
-                                                }
-                                                mapContext.startActivity(webIntent)
-                                            }
-                                        }
-                                    },
+                                    .glassClickable(pressedScale = 0.96f) { openMap(appContext, rawItems) },
                                 cornerRadius = 20.dp
                             ) {
                                 Icon(
@@ -611,13 +622,11 @@ fun CollectionsView(
                         }
 
                         // Card D: Secure Hidden Album
-                        item {
+                        item(key = "pin-hidden") {
                             GlassCard(
                                 modifier = Modifier
                                     .size(120.dp)
-                                    .clickable {
-                                        showBiometricDialog = true
-                                    },
+                                    .glassClickable(pressedScale = 0.96f) { showBiometricDialog = true },
                                 cornerRadius = 20.dp
                             ) {
                                 Icon(
@@ -645,7 +654,7 @@ fun CollectionsView(
             }
 
             // USER CUSTOM ALBUMS LIST ("Álbumes")
-            item {
+            item(key = "albums-header", contentType = "albums-header") {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp).animateItem()) {
                     Row(
                         modifier = Modifier
@@ -684,14 +693,13 @@ fun CollectionsView(
             }
 
             if (customAlbums.isNotEmpty()) {
-                items(customAlbums.entries.toList(), key = { it.key }) { (albumName, albumItems) ->
+                items(customAlbums.entries.toList(), key = { "album-" + it.key }, contentType = { "album" }) { (albumName, albumItems) ->
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    selectedSubAlbumName = albumName
-                                    selectedSubAlbumItems = albumItems
+                                .glassClickable(pressedScale = 0.98f) {
+                                    openAlbum = AlbumRef(AlbumKind.Custom, albumName, albumName)
                                 }
                                 .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -728,5 +736,40 @@ fun CollectionsView(
             }
         }
     }
+    }
+}
+
+private enum class AlbumKind { Favorites, Hidden, Recent, Memory, Custom }
+
+private data class AlbumRef(val kind: AlbumKind, val name: String, val title: String)
+
+private fun openMap(context: android.content.Context, items: List<MediaItem>) {
+    val coords = items.asSequence()
+        .filter { !it.isHidden }
+        .mapNotNull { it.location }
+        .map { it.replace(" ", "") }
+        .filter { c -> c.split(",").let { p -> p.size == 2 && p.all { v -> v.toDoubleOrNull() != null } } }
+        .distinct()
+        .take(10)
+        .toList()
+    if (coords.isEmpty()) {
+        Toast.makeText(context, "Ninguna foto tiene ubicación", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val url = if (coords.size == 1) {
+        "https://www.google.com/maps/search/?api=1&query=${coords[0]}"
+    } else {
+        val waypoints = coords.drop(1).dropLast(1).joinToString("%7C")
+        "https://www.google.com/maps/dir/?api=1&origin=${coords.first()}&destination=${coords.last()}" +
+            if (waypoints.isNotEmpty()) "&waypoints=$waypoints" else ""
+    }
+    val base = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(android.content.Intent(base).setPackage("com.google.android.apps.maps"))
+    } catch (e: Exception) {
+        try { context.startActivity(base) } catch (e2: Exception) {
+            Toast.makeText(context, "No hay ninguna app para abrir el mapa", Toast.LENGTH_SHORT).show()
+        }
     }
 }

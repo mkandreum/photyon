@@ -71,6 +71,7 @@ import com.example.ui.components.liquidGlassBackdrop
 import com.example.ui.theme.GlassBarFill
 import com.example.ui.theme.GlassBarBorder
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.boundsInRoot
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -149,25 +150,26 @@ fun MediaDetailView(
     var isExiting by remember { mutableStateOf(false) }
 
     // Swipe-down-to-close drag state
-    var dragOffsetY by remember { mutableStateOf(0f) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
     var isDraggingDown by remember { mutableStateOf(false) }
 
     var areControlsVisible by remember { mutableStateOf(true) }
     var lastInteractionTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
-    LaunchedEffect(areControlsVisible, lastInteractionTime) {
-        if (areControlsVisible) {
-            kotlinx.coroutines.delay(3000)
-            if (System.currentTimeMillis() - lastInteractionTime >= 3000) {
-                areControlsVisible = false
-            }
+    var showDetailMenu by remember { mutableStateOf(false) }
+
+    // Auto-hide controls, but never while a panel/menu is open
+    LaunchedEffect(areControlsVisible, lastInteractionTime, showAdjustSliders, showDetailMenu) {
+        if (areControlsVisible && !showAdjustSliders && !showDetailMenu) {
+            delay(3000)
+            areControlsVisible = false
         }
     }
 
     LaunchedEffect(isExiting) {
         if (isExiting) {
             viewModel.clearDetailListOverride()
-            kotlinx.coroutines.delay(250)
+            delay(250)
             onBack()
         }
     }
@@ -196,7 +198,16 @@ fun MediaDetailView(
     var newLocation by remember { mutableStateOf(currentItem.location ?: "") }
     var newDateText by remember { mutableStateOf("") }
 
+    var dateError by remember { mutableStateOf(false) }
     var lastResetId by remember { mutableStateOf(currentItem.id) }
+    fun openMetadataDialog() {
+        newTitle = currentItem.displayName
+        newLocation = currentItem.location ?: ""
+        newDateText = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+            .format(Date(currentItem.dateAdded * 1000))
+        dateError = false
+        showAdjustMetadataDialog = true
+    }
 
     LaunchedEffect(currentItem) {
         if (currentItem.id != lastResetId) {
@@ -211,7 +222,6 @@ fun MediaDetailView(
     // Dialog for custom Album Adding
     var showAddAlbumDialog by remember { mutableStateOf(false) }
     var albumNameInput by remember { mutableStateOf("") }
-    var dateError by remember { mutableStateOf(false) }
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val detailSnackbarHostState = remember { SnackbarHostState() }
@@ -257,6 +267,13 @@ fun MediaDetailView(
 
     val videoController = remember { VideoController() }
 
+    suspend fun animateDragBack() {
+        androidx.compose.animation.core.animate(
+            initialValue = dragOffsetY, targetValue = 0f,
+            animationSpec = spring(dampingRatio = 0.8f, stiffness = 400f)
+        ) { value, _ -> dragOffsetY = value }
+    }
+
     fun formatTime(ms: Long): String {
         val totalSec = floor(ms / 1000.0).toLong()
         val min = totalSec / 60
@@ -300,19 +317,21 @@ fun MediaDetailView(
                 key = { allItems.getOrNull(it)?.id ?: it }
             ) { pageIndex ->
             val pageItem = allItems.getOrNull(pageIndex) ?: return@HorizontalPager
-            val pageOffset = (pageIndex - pagerState.currentPage + pagerState.currentPageOffsetFraction).coerceIn(-1f, 1f)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clipToBounds()
                     .graphicsLayer {
                         // Parallax: background image shifts slower than pager swipe
+                        val pageOffset = (pageIndex - pagerState.currentPage + pagerState.currentPageOffsetFraction).coerceIn(-1f, 1f)
                         translationX = pageOffset * -size.width * 0.08f
                     },
                 contentAlignment = Alignment.Center
             ) {
                 if (pageItem.isVideo) {
                     val isCurrentPage = pagerState.currentPage == pageIndex
+                    val isCurrentState = rememberUpdatedState(isCurrentPage)
+                    var resumeAfterPause by remember(pageItem.id) { mutableStateOf(false) }
                     val mediaPlayerRef = remember { mutableStateOf<MediaPlayer?>(null) }
 
                     var isPlaying by remember(pageItem.id) { mutableStateOf(false) }
@@ -327,10 +346,11 @@ fun MediaDetailView(
                             if (mp != null && isCurrentPage && isReady) {
                                 when (event) {
                                     androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
-                                        if (mp.isPlaying) { mp.pause(); isPlaying = false }
+                                        resumeAfterPause = try { mp.isPlaying } catch (e: IllegalStateException) { false }
+                                        if (resumeAfterPause) { mp.pause(); isPlaying = false }
                                     }
                                     androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
-                                        if (!mp.isPlaying) { mp.start(); isPlaying = true }
+                                        if (resumeAfterPause) { mp.start(); isPlaying = true; resumeAfterPause = false }
                                     }
                                     else -> {}
                                 }
@@ -342,10 +362,7 @@ fun MediaDetailView(
 
                     DisposableEffect(pageItem.id) {
                         onDispose {
-                            mediaPlayerRef.value?.apply {
-                                if (isPlaying) stop()
-                                release()
-                            }
+                            mediaPlayerRef.value?.let { runCatching { it.release() } }
                             mediaPlayerRef.value = null
                             isReady = false
                         }
@@ -361,7 +378,7 @@ fun MediaDetailView(
                         if (isPlaying && isReady) {
                             while (true) {
                                 val mp = mediaPlayerRef.value
-                                if (mp != null && mp.isPlaying) {
+                                if (mp != null && isReady && mp.isPlaying) {
                                     mediaPosition = mp.currentPosition.toLong()
                                     mediaDuration = mp.duration.toLong()
                                 }
@@ -383,7 +400,10 @@ fun MediaDetailView(
                                     else { mp.start(); isPlaying = true }
                                 }
                             }
-                            videoController.seek = { pos -> mediaPlayerRef.value?.seekTo(pos) }
+                            videoController.seek = { pos ->
+                                mediaPlayerRef.value?.let { runCatching { it.seekTo(pos) } }
+                                mediaPosition = pos.toLong()
+                            }
                         }
                     }
 
@@ -393,26 +413,27 @@ fun MediaDetailView(
                                 android.view.TextureView(context).apply {
                                     surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
                                         override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, w: Int, h: Int) {
-                                            val mp = MediaPlayer().apply {
-                                                setDataSource(context, android.net.Uri.parse(pageItem.uri))
-                                                setSurface(android.view.Surface(surface))
-                                                isLooping = true
-                                                prepareAsync()
-                                                setOnPreparedListener {
+                                            val mp = MediaPlayer()
+                                            try {
+                                                mp.setDataSource(context, android.net.Uri.parse(pageItem.uri))
+                                                mp.setSurface(android.view.Surface(surface))
+                                                mp.isLooping = true
+                                                mp.setOnPreparedListener {
                                                     mediaDuration = it.duration.toLong()
                                                     isReady = true
-                                                    if (isCurrentPage) { it.start(); isPlaying = true }
+                                                    if (isCurrentState.value) { it.start(); isPlaying = true }
                                                 }
-                                                setOnCompletionListener { isPlaying = false }
+                                                mp.setOnErrorListener { _, _, _ -> isPlaying = false; isReady = false; true }
+                                                mp.prepareAsync()
+                                                mediaPlayerRef.value = mp
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("DetailView", "video load failed: ${pageItem.uri}", e)
+                                                runCatching { mp.release() }
                                             }
-                                            mediaPlayerRef.value = mp
                                         }
                                         override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
                                         override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
-                                            mediaPlayerRef.value?.apply {
-                                                if (isPlaying) stop()
-                                                release()
-                                            }
+                                            mediaPlayerRef.value?.let { runCatching { it.release() } }
                                             mediaPlayerRef.value = null
                                             isReady = false
                                             return true
@@ -436,7 +457,7 @@ fun MediaDetailView(
                                                 if (dragOffsetY > 150f) isExiting = true
                                                 else {
                                                     scope.launch {
-                                                        androidx.compose.animation.core.animate(initialValue = dragOffsetY, targetValue = 0f) { value, _ -> dragOffsetY = value }
+                                                        animateDragBack()
                                                     }
                                                 }
                                                 isDraggingDown = false
@@ -444,7 +465,7 @@ fun MediaDetailView(
                                         },
                                         onDragCancel = {
                                             if (isDraggingDown) {
-                                                scope.launch { androidx.compose.animation.core.animate(initialValue = dragOffsetY, targetValue = 0f) { value, _ -> dragOffsetY = value } }
+                                                scope.launch { animateDragBack() }
                                                 isDraggingDown = false
                                             }
                                         },
@@ -490,84 +511,60 @@ fun MediaDetailView(
                         }
                     }
                 } else {
-                    // Interactive Zoomable image (Pan & Scale)
-                    var scale by remember(pageItem.id) { mutableStateOf(1f) }
+                    // Interactive Zoomable image (Pan & Scale). State is only read inside
+                    // graphicsLayer / pointer lambdas so gestures never recompose.
+                    var scale by remember(pageItem.id) { mutableFloatStateOf(1f) }
                     var offset by remember(pageItem.id) { mutableStateOf(Offset.Zero) }
-                    val animatedScale by animateFloatAsState(
-                        targetValue = scale,
-                        animationSpec = spring(dampingRatio = 0.5f, stiffness = 300f),
-                        label = "zoomScale"
-                    )
-                    val animatedOffsetX by animateFloatAsState(
-                        targetValue = offset.x,
-                        animationSpec = spring(dampingRatio = 0.5f, stiffness = 300f),
-                        label = "offsetX"
-                    )
-                    val animatedOffsetY by animateFloatAsState(
-                        targetValue = offset.y,
-                        animationSpec = spring(dampingRatio = 0.5f, stiffness = 300f),
-                        label = "offsetY"
-                    )
+                    val zoomed by remember(pageItem.id) { derivedStateOf { scale > 1f } }
+                    val isCurrentImage = pagerState.currentPage == pageIndex
+                    var viewSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
 
-                    // Reset zoom on swipe/page change
-                    LaunchedEffect(pageItem.id) {
-                        scale = 1f
-                        offset = Offset.Zero
-                    }
-                    LaunchedEffect(scale) {
-                        isZoomed = scale > 1f
+                    fun clampOffset(o: Offset, sc: Float): Offset {
+                        val maxX = viewSize.width * (sc - 1f) / 2f
+                        val maxY = viewSize.height * (sc - 1f) / 2f
+                        return Offset(o.x.coerceIn(-maxX, maxX), o.y.coerceIn(-maxY, maxY))
                     }
 
-                    // Conditional modifier: only intercept gestures when zoomed in
-                    val zoomEnabled = scale > 1f
+                    // Reset zoom when the page is no longer the current one
+                    LaunchedEffect(isCurrentImage) {
+                        if (!isCurrentImage) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        }
+                    }
+                    // Only the visible page may lock the pager
+                    LaunchedEffect(zoomed, isCurrentImage) {
+                        if (isCurrentImage) isZoomed = zoomed
+                    }
+                    DisposableEffect(pageItem.id) {
+                        onDispose { if (isZoomed && scale > 1f) isZoomed = false }
+                    }
 
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .clipToBounds()
-                            .pointerInput(pageItem.id, scale) {
+                            .onSizeChanged { viewSize = it }
+                            .pointerInput(pageItem.id, zoomed) {
                                 detectVerticalDragGestures(
-                                    onDragStart = {
-                                        if (scale == 1f) {
-                                            isDraggingDown = true
-                                        }
-                                    },
+                                    onDragStart = { if (!zoomed) isDraggingDown = true },
                                     onDragEnd = {
                                         if (isDraggingDown) {
-                                            if (dragOffsetY > 150f) {
-                                                isExiting = true
-                                            } else {
-                                                scope.launch {
-                                                    androidx.compose.animation.core.animate(
-                                                        initialValue = dragOffsetY,
-                                                        targetValue = 0f
-                                                    ) { value, _ ->
-                                                        dragOffsetY = value
-                                                    }
-                                                }
-                                            }
+                                            if (dragOffsetY > 150f) isExiting = true
+                                            else scope.launch { animateDragBack() }
                                             isDraggingDown = false
                                         }
                                     },
                                     onDragCancel = {
                                         if (isDraggingDown) {
-                                            scope.launch {
-                                                androidx.compose.animation.core.animate(
-                                                    initialValue = dragOffsetY,
-                                                    targetValue = 0f
-                                                ) { value, _ ->
-                                                    dragOffsetY = value
-                                                }
-                                            }
+                                            scope.launch { animateDragBack() }
                                             isDraggingDown = false
                                         }
                                     },
                                     onVerticalDrag = { change, dragAmount ->
                                         if (isDraggingDown) {
                                             dragOffsetY = (dragOffsetY + dragAmount).coerceAtLeast(0f)
-                                            if (dragOffsetY > 0f) {
-                                                change.consume()
-                                            }
+                                            if (dragOffsetY > 0f) change.consume()
                                         }
                                     }
                                 )
@@ -597,31 +594,25 @@ fun MediaDetailView(
                                         if (scale > 1f || zoom != 1f) {
                                             val newScale = (scale * zoom).coerceIn(1f, 4f)
                                             scale = newScale
-                                            if (scale > 1f) {
-                                                offset = Offset(
-                                                    x = (offset.x + pan.x).coerceIn(
-                                                        -(size.width * (scale - 1f) / 2f),
-                                                        size.width * (scale - 1f) / 2f
-                                                    ),
-                                                    y = (offset.y + pan.y).coerceIn(
-                                                        -(size.height * (scale - 1f) / 2f),
-                                                        size.height * (scale - 1f) / 2f
-                                                    )
-                                                )
-                                            } else {
-                                                offset = Offset.Zero
-                                            }
+                                            offset = if (newScale > 1f) clampOffset(offset + pan, newScale) else Offset.Zero
                                         }
                                     }
                                 }
                                 .pointerInput(pageItem.id) {
                                     detectTapGestures(
                                         onDoubleTap = {
-                                            if (scale > 1f) {
-                                                scale = 1f
-                                                offset = Offset.Zero
-                                            } else {
-                                                scale = 3f
+                                            val from = scale
+                                            val fromOffset = offset
+                                            val target = if (from > 1f) 1f else 3f
+                                            scope.launch {
+                                                androidx.compose.animation.core.animate(
+                                                    from, target,
+                                                    animationSpec = spring(dampingRatio = 0.8f, stiffness = 400f)
+                                                ) { v, _ ->
+                                                    scale = v
+                                                    offset = if (target == 1f) fromOffset * ((v - 1f) / (from - 1f).coerceAtLeast(0.001f))
+                                                    else Offset.Zero
+                                                }
                                             }
                                             areControlsVisible = false
                                             lastInteractionTime = System.currentTimeMillis()
@@ -638,18 +629,19 @@ fun MediaDetailView(
                                 model = thumbnailRequest,
                                 contentDescription = null,
                                 contentScale = ContentScale.Fit,
+                                colorFilter = colorFilter,
                                 onError = { android.util.Log.e("DetailView", "thumbnail load failed: ${pageItem.uri}") },
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .graphicsLayer {
-                                        scaleX = animatedScale
-                                        scaleY = animatedScale
-                                        translationX = animatedOffsetX
-                                        translationY = animatedOffsetY
+                                        scaleX = scale
+                                        scaleY = scale
+                                        translationX = offset.x
+                                        translationY = offset.y
                                         rotationZ = rotation
                                     }
                             )
-                            // 2. Full-resolution HDR-compatible layer fading in on top
+                            // 2. Full-resolution layer fading in on top
                             AsyncImage(
                                 model = imageRequest,
                                 contentDescription = pageItem.displayName,
@@ -659,18 +651,18 @@ fun MediaDetailView(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .graphicsLayer {
-                                        scaleX = animatedScale
-                                        scaleY = animatedScale
-                                        translationX = animatedOffsetX
-                                        translationY = animatedOffsetY
+                                        scaleX = scale
+                                        scaleY = scale
+                                        translationX = offset.x
+                                        translationY = offset.y
                                         rotationZ = rotation
                                     }
                             )
                         }
 
-                        // Zoom level indicator (visible when zoomed)
+                    // Zoom level indicator (visible when zoomed)
                         AnimatedVisibility(
-                            visible = scale > 1f,
+                            visible = zoomed,
                             enter = fadeIn() + scaleIn(),
                             exit = fadeOut() + scaleOut(),
                             modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
@@ -698,18 +690,18 @@ fun MediaDetailView(
 
 
         // --- 2. FLOATING OVERHEAD HEADER CONTROLS ---
+        AnimatedVisibility(
+            visible = areControlsVisible,
+            enter = fadeIn() + slideInVertically { -it / 4 },
+            exit = fadeOut() + slideOutVertically { -it / 4 },
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp)
-                .padding(top = 16.dp, bottom = 12.dp)
-                .align(Alignment.TopCenter)
-                .graphicsLayer {
-                    val headerTarget = if (areControlsVisible) 1f else 0f
-                    alpha = headerTarget
-                    translationY = (1f - headerTarget) * (-20f)
-                },
+                .padding(top = 16.dp, bottom = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -774,7 +766,6 @@ fun MediaDetailView(
             }
 
             // Options menu trigger button (...)
-            var showDetailMenu by remember { mutableStateOf(false) }
             Box {
                 IconButton(
                     onClick = { showDetailMenu = true },
@@ -843,7 +834,7 @@ fun MediaDetailView(
                         text = { Text("Ajustar datos", color = Color.White) },
                         leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, tint = Color.White) },
                         onClick = {
-                            showAdjustMetadataDialog = true
+                            openMetadataDialog()
                             showDetailMenu = false
                         }
                     )
@@ -851,22 +842,24 @@ fun MediaDetailView(
             }
         }
 
+        } // end header AnimatedVisibility
+
         // --- 3. BOTTOM CAROUSEL & ACTIONS ---
+        AnimatedVisibility(
+            visible = areControlsVisible,
+            enter = fadeIn() + slideInVertically { it / 4 },
+            exit = fadeOut() + slideOutVertically { it / 4 },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
 
         Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .graphicsLayer {
-                    val controlsTarget = if (areControlsVisible) 1f else 0f
-                    alpha = controlsTarget
-                    translationY = (1f - controlsTarget) * 30f
-                }
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))
                     )
                 )
+                .navigationBarsPadding()
                 .padding(bottom = 12.dp)
         ) {
             // Filmstrip carousel
@@ -964,7 +957,14 @@ fun MediaDetailView(
                             putExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri.parse(currentItem.uri))
                             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
-                        detailContext.startActivity(android.content.Intent.createChooser(shareIntent, "Compartir"))
+                        try {
+                            detailContext.startActivity(
+                                android.content.Intent.createChooser(shareIntent, "Compartir")
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        } catch (e: Exception) {
+                            scope.launch { detailSnackbarHostState.showSnackbar("No se puede compartir este elemento") }
+                        }
                     },
                     contentDescription = "Compartir",
                     tint = Color.White,
@@ -1046,7 +1046,7 @@ fun MediaDetailView(
 
                         // Info
                         AnimatedPressIcon(
-                            onClick = { showAdjustMetadataDialog = true },
+                            onClick = { openMetadataDialog() },
                             contentDescription = "Info",
                             modifier = Modifier
                                 .size(36.dp)
@@ -1095,6 +1095,8 @@ fun MediaDetailView(
             }
         }
 
+        } // end bottom AnimatedVisibility
+
         // --- 4. VIDEO CONTROLS (glass floating bar con seek animado) ---
         var isDraggingSeek by remember { mutableStateOf(false) }
         var dragFraction by remember { mutableStateOf(0f) }
@@ -1116,6 +1118,7 @@ fun MediaDetailView(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(bottom = 130.dp)
                 .onGloballyPositioned { coords ->
                     if (coords.isAttached) {
                         videoControlsRect = coords.boundsInRoot()
@@ -1135,11 +1138,6 @@ fun MediaDetailView(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     // Barra de progreso de cristal con thumb animado
-                    val thumbScale by animateFloatAsState(
-                        targetValue = if (isDraggingSeek) 1.6f else 1f,
-                        animationSpec = spring(dampingRatio = 0.5f, stiffness = 400f),
-                        label = "thumbScale"
-                    )
                     Slider(
                         value = seekFraction,
                         onValueChange = { f ->
@@ -1227,7 +1225,7 @@ fun MediaDetailView(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 80.dp)
+                .padding(bottom = 150.dp)
                 .padding(horizontal = 16.dp)
         ) {
             GlassCard(
@@ -1295,6 +1293,11 @@ fun MediaDetailView(
                 }
             }
         }
+
+        SnackbarHost(
+            hostState = detailSnackbarHostState,
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 72.dp)
+        )
 
         // --- 6. ADJUST METADATA DIALOG ("Ajustar datos") ---
         if (showAdjustMetadataDialog) {

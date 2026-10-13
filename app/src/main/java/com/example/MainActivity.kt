@@ -5,7 +5,20 @@ import android.content.ContentValues
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.Settings
 import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.composed
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.unit.IntOffset
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -51,6 +64,7 @@ import com.example.data.MediaItem
 import com.example.ui.GalleryViewModel
 import com.example.ui.GalleryViewModelFactory
 import com.example.ui.components.GlassCard
+import com.example.ui.components.glassClickable
 import com.example.ui.components.liquidGlassBackdrop
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInRoot
@@ -146,10 +160,8 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
         }
     }
 
-    LaunchedEffect(activeDetailItem) {
-        if (activeDetailItem != null) {
-            isDetailVisible = true
-        }
+    LaunchedEffect(activeDetailItem != null) {
+        isDetailVisible = activeDetailItem != null
     }
 
     LaunchedEffect(isLibraryScrolling) {
@@ -169,37 +181,73 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
     }
 
     // --- A. MEDIASTORE READ PERMISSIONS RESOLVER ---
-    val permissionsToRequest = arrayOf(
-        Manifest.permission.READ_MEDIA_IMAGES,
-        Manifest.permission.READ_MEDIA_VIDEO
-    )
+    val permissionsToRequest = remember {
+        arrayOf(
+            Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.READ_MEDIA_VIDEO,
+            "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+        )
+    }
+    fun readMediaAccess(): MediaAccess {
+        fun granted(p: String) = ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
+        return when {
+            granted(Manifest.permission.READ_MEDIA_IMAGES) || granted(Manifest.permission.READ_MEDIA_VIDEO) -> MediaAccess.Full
+            granted("android.permission.READ_MEDIA_VISUAL_USER_SELECTED") -> MediaAccess.Partial
+            else -> MediaAccess.Denied
+        }
+    }
+    var mediaAccess by remember { mutableStateOf(readMediaAccess()) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        val allGranted = (results[Manifest.permission.READ_MEDIA_IMAGES] == true)
-                && (results[Manifest.permission.READ_MEDIA_VIDEO] == true)
-        if (allGranted) {
-            Toast.makeText(context, "Fotos del dispositivo cargadas con éxito", Toast.LENGTH_SHORT).show()
-        }
+    ) {
+        mediaAccess = readMediaAccess()
+        viewModel.onMediaPermissionResult()
     }
 
     LaunchedEffect(Unit) {
-        permissionLauncher.launch(permissionsToRequest)
+        if (mediaAccess != MediaAccess.Full) permissionLauncher.launch(permissionsToRequest)
     }
 
-    val detailAlpha by animateFloatAsState(
+    // Returning from system settings: re-check and reload
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val now = readMediaAccess()
+                if (now != mediaAccess) {
+                    mediaAccess = now
+                    viewModel.onMediaPermissionResult()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val detailAlphaState = animateFloatAsState(
         targetValue = if (isDetailVisible) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f),
+        animationSpec = tween(durationMillis = 260),
         label = "detailAlpha"
     )
-    val detailScale by animateFloatAsState(
-        targetValue = if (isDetailVisible) 1f else 0.95f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 350f),
+    val detailScaleState = animateFloatAsState(
+        targetValue = if (isDetailVisible) 1f else 0.96f,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = 400f),
         label = "detailScale"
     )
-    // Keep detail composable alive during exit animation
-    val showDetailComposable = isDetailVisible || detailAlpha > 0.01f
+    // Keep detail composable alive during exit animation; derived so the screen does not
+    // recompose on every animation frame.
+    val showDetailComposable by remember { derivedStateOf { isDetailVisible || detailAlphaState.value > 0.01f } }
+
+    fun closeDetail() {
+        if (!isDetailVisible) return
+        isDetailVisible = false
+        scope.launch {
+            delay(280)
+            // Only clear if nobody re-opened an item meanwhile
+            if (!isDetailVisible) viewModel.setDetailItem(null)
+        }
+    }
 
     // --- C. DUAL SCREEN NAVIGATION (DETAIL VS MAIN FRAMING) ---
     Box(
@@ -207,9 +255,7 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        BackHandler(enabled = activeDetailItem != null) {
-            viewModel.setDetailItem(null)
-        }
+        BackHandler(enabled = activeDetailItem != null) { closeDetail() }
         BackHandler(enabled = isSearchActive) {
             viewModel.setSearchQuery("")
             isSearchActive = false
@@ -237,14 +283,14 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                         targetState = currentTab,
                         transitionSpec = {
                             val dir = if (targetState == "Fototeca") -1 else 1
-                            slideInHorizontally(
-                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f),
-                                initialOffsetX = { fullWidth -> dir * fullWidth / 4 }
-                            ) + fadeIn(animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f)) togetherWith
-                            slideOutHorizontally(
-                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f),
-                                targetOffsetX = { fullWidth -> -dir * fullWidth / 4 }
-                            ) + fadeOut(animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f))
+                            (slideInHorizontally(
+                                animationSpec = tween(320, easing = FastOutSlowInEasing),
+                                initialOffsetX = { fullWidth -> dir * fullWidth / 6 }
+                            ) + fadeIn(tween(240))) togetherWith
+                            (slideOutHorizontally(
+                                animationSpec = tween(320, easing = FastOutSlowInEasing),
+                                targetOffsetX = { fullWidth -> -dir * fullWidth / 6 }
+                            ) + fadeOut(tween(160)))
                         },
                         label = "tabTransition"
                     ) { tab ->
@@ -319,14 +365,14 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                 )
                         ) {
                             val segmentWidth = maxWidth / densityModes.size
-                            val densityIndicatorOffset by animateDpAsState(
+                            val densityIndicatorOffset = animateDpAsState(
                                 targetValue = segmentWidth * selectedDensityIndex,
-                                animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f),
+                                animationSpec = spring(dampingRatio = 0.8f, stiffness = 380f),
                                 label = "densityIndicator"
                             )
                             Box(
                                 modifier = Modifier
-                                    .offset(x = densityIndicatorOffset)
+                                    .offset { IntOffset(densityIndicatorOffset.value.roundToPx(), 0) }
                                     .width(segmentWidth)
                                     .fillMaxHeight()
                                     .padding(6.dp)
@@ -345,7 +391,7 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                         modifier = Modifier
                                             .weight(1f)
                                             .fillMaxHeight()
-                                            .clickable { viewModel.setGridMode(mode) },
+                                            .glassClickable(onClick = { viewModel.setGridMode(mode) }),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
@@ -369,7 +415,7 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                 .clip(CircleShape)
                                 .background(if (isShaderActive) Color.Transparent else GlassBarFill)
                                 .border(1.dp, if (isShaderActive) Color.Transparent else GlassBarBorder, CircleShape)
-                                .clickable {
+                                .glassClickable {
                                     showMainBar = true
                                     densityBarVisible = false
                                 },
@@ -427,14 +473,14 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                     ) {
                         val tabWidth = maxWidth / 2
                         val isFototeca = currentTab == "Fototeca"
-                        val indicatorOffset by animateDpAsState(
+                        val indicatorOffset = animateDpAsState(
                             targetValue = if (isFototeca) 0.dp else tabWidth,
-                            animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f),
+                            animationSpec = spring(dampingRatio = 0.8f, stiffness = 380f),
                             label = "tabIndicator"
                         )
                         Box(
                             modifier = Modifier
-                                .offset(x = indicatorOffset)
+                                .offset { IntOffset(indicatorOffset.value.roundToPx(), 0) }
                                 .width(tabWidth)
                                 .fillMaxHeight()
                                 .padding(6.dp)
@@ -451,10 +497,7 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) { viewModel.selectTab("Fototeca") },
+                                    .glassClickable { viewModel.selectTab("Fototeca") },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(
@@ -480,10 +523,7 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) { viewModel.selectTab("Colecciones") },
+                                    .glassClickable { viewModel.selectTab("Colecciones") },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(
@@ -497,8 +537,8 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                             tint = if (currentTab == "Colecciones") Color(0xFF0A84FF) else Color.White.copy(alpha = 0.75f),
                                             modifier = Modifier.size(NavIconSize)
                                         )
-                                        val hiddenCount by viewModel.hiddenItems.collectAsStateWithLifecycle()
-                                        if (hiddenCount.isNotEmpty()) {
+                                        val hasHidden by viewModel.hasHiddenItems.collectAsStateWithLifecycle()
+                                        if (hasHidden) {
                                             Box(
                                                 modifier = Modifier
                                                     .size(8.dp)
@@ -548,6 +588,8 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                         .align(Alignment.TopCenter)
                 ) {
                     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+                    val focusRequester = remember { FocusRequester() }
+                    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -602,13 +644,14 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                                     unfocusedTextColor = Color.White
                                 ),
                                 singleLine = true,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f).focusRequester(focusRequester)
                             )
                             IconButton(
                                 onClick = {
                                     viewModel.setSearchQuery("")
                                     isSearchActive = false
-                                }
+                                },
+                                modifier = Modifier.size(40.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
@@ -623,28 +666,89 @@ fun MainGalleryScreen(viewModel: GalleryViewModel) {
                 }
                 }
 
+        if (mediaAccess != MediaAccess.Full && activeDetailItem == null) {
+            PermissionBanner(
+                access = mediaAccess,
+                onGrant = { permissionLauncher.launch(permissionsToRequest) },
+                onOpenSettings = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                    )
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
+
         // Detail overlay — grid stays visible underneath, premium scale+fade transition
         if (showDetailComposable) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = detailAlpha
-                        scaleX = detailScale
-                        scaleY = detailScale
+                        alpha = detailAlphaState.value
+                        scaleX = detailScaleState.value
+                        scaleY = detailScaleState.value
                     }
             ) {
                 MediaDetailView(
                     viewModel = viewModel,
-                    onBack = {
-                        isDetailVisible = false
-                        scope.launch {
-                            delay(350)
-                            viewModel.setDetailItem(null)
-                        }
-                    }
+                    onBack = { closeDetail() }
                 )
             }
         }
+    }
+}
+
+private enum class MediaAccess { Full, Partial, Denied }
+
+@Composable
+private fun PermissionBanner(
+    access: MediaAccess,
+    onGrant: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Color(0xE61C1C1E))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), shape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            if (access == MediaAccess.Partial) "Acceso limitado a tus fotos" else "Sin acceso a tus fotos",
+            color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            if (access == MediaAccess.Partial) "Solo se muestran las fotos que has seleccionado. Permite el acceso completo para ver toda tu galería."
+            else "Concede permiso para leer fotos y vídeos y mostrar tu galería.",
+            color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            BannerButton("Permitir", filled = true, onClick = onGrant)
+            BannerButton("Ajustes", filled = false, onClick = onOpenSettings)
+        }
+    }
+}
+
+@Composable
+private fun BannerButton(label: String, filled: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(if (filled) Color(0xFF0A84FF) else Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Color.White.copy(alpha = if (filled) 0.25f else 0.18f), shape)
+            .glassClickable(onClick)
+            .padding(horizontal = 18.dp, vertical = 9.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }

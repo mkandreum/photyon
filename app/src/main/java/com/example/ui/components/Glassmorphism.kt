@@ -35,6 +35,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.GlassBarFill
 import com.example.ui.theme.GlassBarBorder
+import com.example.ui.theme.GlassSpecular
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.draw.drawBehind
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -53,7 +56,12 @@ fun GlassCard(
         modifier = modifier
             .border(
                 width = 1.dp,
-                color = GlassBarBorder.copy(alpha = borderAlpha),
+                brush = Brush.verticalGradient(
+                    listOf(
+                        GlassSpecular.copy(alpha = GlassSpecular.alpha * borderAlpha),
+                        GlassBarBorder.copy(alpha = GlassBarBorder.alpha * borderAlpha)
+                    )
+                ),
                 shape = shape
             )
             .clip(shape)
@@ -73,174 +81,122 @@ fun LiquidLensCard(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition()
-
-    val wavePhase by infiniteTransition.animateFloat(
+    val infiniteTransition = rememberInfiniteTransition(label = "lens")
+    val wavePhase = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 2f * PI.toFloat(),
         animationSpec = infiniteRepeatable(
             animation = tween(4000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
-        )
+        ),
+        label = "lensPhase"
     )
 
-    // Derive highlight positions from wavePhase using slower factors (single animation optimization)
-    val highlightX = 0.5f + 0.25f * sin(wavePhase * 0.35f)
-    val highlightY = 0.45f + 0.15f * cos(wavePhase * 0.28f)
-
     Box(
-        modifier = modifier
-            .drawWithContent {
+        modifier = modifier.drawWithCache {
+            val w = size.width
+            val h = size.height
+            val cx = w / 2f
+            val cy = h / 2f
+            val rx = w * 0.49f
+            val ry = h * 0.49f
+            val ovalTl = Offset(cx - rx, cy - ry)
+            val ovalSize = Size(rx * 2f, ry * 2f)
+            val glassBrush = Brush.radialGradient(
+                0f to Color(0x0AFFFFFF),
+                0.55f to Color(0x0FFFFFFF),
+                0.82f to Color(0x18FFFFFF),
+                1f to Color(0x08FFFFFF),
+                center = Offset(cx, cy),
+                radius = maxOf(rx, ry)
+            )
+            val shadowBrush = Brush.verticalGradient(
+                0f to Color.Transparent,
+                0.6f to Color.Black.copy(alpha = 0.15f),
+                1f to Color.Black.copy(alpha = 0.3f),
+                startY = cy + ry * 0.3f,
+                endY = cy + ry
+            )
+            val specRx = rx * 0.35f
+            val specRy = ry * 0.18f
+            val specR = specRx * 2.5f
+            val highlightBrush = Brush.radialGradient(
+                0f to Color.White.copy(alpha = 0.32f),
+                0.3f to Color.White.copy(alpha = 0.12f),
+                0.7f to Color.White.copy(alpha = 0.02f),
+                1f to Color.Transparent,
+                center = Offset.Zero,
+                radius = specR
+            )
+            val redFringe = Color(0x44FF3333)
+            val blueFringe = Color(0x443366FF)
+            val wavePaths = Array(3) { Path() }
+            val arcPaths = Array(2) { Path() }
+            val waveStroke = Array(3) { Stroke(width = 2.5f - it * 0.5f, cap = StrokeCap.Round, join = StrokeJoin.Round) }
+            val arcStroke = Array(2) { Stroke(width = 3f - it, cap = StrokeCap.Round) }
+            val rimStroke = Stroke(width = 1.2f)
+            val pi = PI.toFloat()
+
+            onDrawWithContent {
                 drawContent()
-                drawLiquidLens(
-                    size = size,
-                    wavePhase = wavePhase,
-                    highlightX = highlightX,
-                    highlightY = highlightY
+                val phase = wavePhase.value // read in draw phase only
+
+                drawOval(redFringe, Offset(cx - rx - 1.5f, cy - ry), Size(rx * 2f + 3f, ry * 2f))
+                drawOval(blueFringe, Offset(cx - rx + 1.5f, cy - ry), Size(rx * 2f - 3f, ry * 2f))
+                drawOval(brush = glassBrush, topLeft = ovalTl, size = ovalSize)
+
+                for (i in 0 until 3) {
+                    val path = wavePaths[i]
+                    path.rewind()
+                    val startY = cy - ry * 0.7f + i * ry * 0.45f
+                    val freq = 3f + i * 1.5f
+                    val steps = 12
+                    for (j in 0..steps) {
+                        val nx = -0.65f + 1.3f * j / steps
+                        val amp = ry * 0.06f * (1f - nx * nx).coerceAtLeast(0f)
+                        val y = startY + amp * sin(nx * pi * freq + phase + i * 2.1f)
+                        val x = cx + nx * rx
+                        if (j == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    }
+                    drawPath(path, Color.White.copy(alpha = 0.07f + i * 0.02f), style = waveStroke[i])
+                }
+
+                for (i in 0 until 2) {
+                    val arcPath = arcPaths[i]
+                    arcPath.rewind()
+                    val arcCy = cy - ry * 0.3f + i * ry * 0.6f
+                    val arcR = rx * 0.5f + i * rx * 0.15f
+                    val segments = 12
+                    for (j in 0..segments) {
+                        val angle = -pi * 0.6f + j * pi * 1.2f / segments
+                        val px = cx + arcR * cos(angle)
+                        val py = arcCy + ry * 0.2f * sin(angle * 2.5f + phase * 0.7f + i)
+                        if (j == 0) arcPath.moveTo(px, py) else arcPath.lineTo(px, py)
+                    }
+                    drawPath(arcPath, Color.White.copy(alpha = 0.05f + i * 0.03f), style = arcStroke[i])
+                }
+
+                val hx = 0.5f + 0.25f * sin(phase * 0.35f)
+                val hy = 0.45f + 0.15f * cos(phase * 0.28f)
+                val specCx = cx + (hx - 0.5f) * rx * 1.2f
+                val specCy = cy + (hy - 0.45f) * ry * 1.1f
+                translate(specCx, specCy) {
+                    drawOval(brush = highlightBrush, topLeft = Offset(-specRx * 2.5f, -specRy * 3f), size = Size(specRx * 5f, specRy * 6f))
+                    drawCircle(Color.White.copy(alpha = 0.45f), rx * 0.04f, Offset(-specRx * 0.3f, -specRy * 0.8f))
+                }
+
+                drawOval(
+                    Color.White.copy(alpha = 0.18f),
+                    Offset(cx - rx + 1f, cy - ry + 1f),
+                    Size(rx * 2f - 2f, ry * 2f - 2f),
+                    style = rimStroke
                 )
+                drawOval(brush = shadowBrush, topLeft = ovalTl, size = ovalSize)
             }
+        }
     ) {
         content()
     }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLiquidLens(
-    size: Size,
-    wavePhase: Float,
-    highlightX: Float,
-    highlightY: Float
-) {
-    val w = size.width
-    val h = size.height
-    val cx = w / 2f
-    val cy = h / 2f
-    val rx = w * 0.49f
-    val ry = h * 0.49f
-
-    // ── 1. Outer chromatic ring (red fringe) ──
-    drawOval(
-        color = Color(0x44FF3333),
-        topLeft = Offset(cx - rx - 1.5f, cy - ry),
-        size = Size(rx * 2f + 3f, ry * 2f)
-    )
-
-    // ── 2. Inner chromatic ring (blue fringe) ──
-    drawOval(
-        color = Color(0x443366FF),
-        topLeft = Offset(cx - rx + 1.5f, cy - ry),
-        size = Size(rx * 2f - 3f, ry * 2f)
-    )
-
-    // ── 3. Main glass body ── radial gradient simulating lens curvature ──
-    val glassGradient = Brush.radialGradient(
-        *arrayOf(
-            0f to Color(0x0AFFFFFF),
-            0.55f to Color(0x0FFFFFFF),
-            0.82f to Color(0x18FFFFFF),
-            1f to Color(0x08FFFFFF)
-        ),
-        center = Offset(cx, cy)
-    )
-    drawOval(
-        brush = glassGradient,
-        topLeft = Offset(cx - rx, cy - ry),
-        size = Size(rx * 2f, ry * 2f)
-    )
-
-    // ── 4. Caustic light patterns (simulated SVG feTurbulence waves) ──
-    for (i in 0 until 3) {
-        val phaseOffset = i * 2.1f
-        val path = Path()
-        val startY = cy - ry * 0.7f + i * ry * 0.45f
-        path.moveTo(cx - rx * 0.65f, startY)
-
-        var x = cx - rx * 0.65f
-        while (x < cx + rx * 0.65f) {
-            val nx = (x - cx) / rx
-            val amplitude = ry * 0.06f * (1f - nx * nx).coerceAtLeast(0f)
-            val freq = 3f + i * 1.5f
-            val y = startY + amplitude * sin(nx * PI.toFloat() * freq + wavePhase + phaseOffset)
-            path.lineTo(x, y)
-            x += 10f
-        }
-
-        drawPath(
-            path = path,
-            color = Color.White.copy(alpha = 0.07f + i * 0.02f),
-            style = Stroke(width = 2.5f - i * 0.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-    }
-
-    // ── 5. Secondary caustic arcs (curved light bands) ──
-    for (i in 0 until 2) {
-        val arcPath = Path()
-        val arcCy = cy - ry * 0.3f + i * ry * 0.6f
-        val arcR = rx * 0.5f + i * rx * 0.15f
-        val segments = 20
-        for (j in 0..segments) {
-            val angle = -PI.toFloat() * 0.6f + j.toFloat() * PI.toFloat() * 1.2f / segments
-            val px = cx + arcR * cos(angle)
-            val py = arcCy + ry * 0.2f * sin(angle * 2.5f + wavePhase * 0.7f + i)
-            if (j == 0) arcPath.moveTo(px, py) else arcPath.lineTo(px, py)
-        }
-        drawPath(
-            path = arcPath,
-            color = Color.White.copy(alpha = 0.05f + i * 0.03f),
-            style = Stroke(width = 3f - i * 1f, cap = StrokeCap.Round)
-        )
-    }
-
-    // ── 6. Specular highlight (moving light reflection on curved glass) ──
-    val specCx = cx + (highlightX - 0.5f) * rx * 1.2f
-    val specCy = cy + (highlightY - 0.45f) * ry * 1.1f
-    val specRx = rx * 0.35f
-    val specRy = ry * 0.18f
-
-    val highlightBrush = Brush.radialGradient(
-        *arrayOf(
-            0f to Color.White.copy(alpha = 0.32f),
-            0.3f to Color.White.copy(alpha = 0.12f),
-            0.7f to Color.White.copy(alpha = 0.02f),
-            1f to Color.Transparent
-        ),
-        center = Offset(specCx, specCy)
-    )
-    drawOval(
-        brush = highlightBrush,
-        topLeft = Offset(specCx - specRx * 2.5f, specCy - specRy * 3f),
-        size = Size(specRx * 5f, specRy * 6f)
-    )
-
-    // ── 7. Small bright spot (point reflection like water surface) ──
-    drawCircle(
-        color = Color.White.copy(alpha = 0.45f),
-        radius = rx * 0.04f,
-        center = Offset(specCx - specRx * 0.3f, specCy - specRy * 0.8f)
-    )
-
-    // ── 8. Glass rim inner highlight (thin light line inside border) ──
-    drawOval(
-        color = Color.White.copy(alpha = 0.18f),
-        topLeft = Offset(cx - rx + 1f, cy - ry + 1f),
-        size = Size(rx * 2f - 2f, ry * 2f - 2f),
-        style = Stroke(width = 1.2f)
-    )
-
-    // ── 9. Bottom edge shadow (depth cue) ──
-    val shadowBrush = Brush.verticalGradient(
-        *arrayOf(
-            0f to Color.Transparent,
-            0.6f to Color.Black.copy(alpha = 0.15f),
-            1f to Color.Black.copy(alpha = 0.3f)
-        ),
-        startY = cy + ry * 0.3f,
-        endY = cy + ry
-    )
-    drawOval(
-        brush = shadowBrush,
-        topLeft = Offset(cx - rx, cy - ry),
-        size = Size(rx * 2f, ry * 2f)
-    )
 }
 
 @Composable
@@ -257,13 +213,13 @@ fun AnimatedPageIndicator(
     ) {
         repeat(pageCount) { index ->
             val isSelected = index == currentPage
-            val dotScale by animateFloatAsState(
+            val dotScale = animateFloatAsState(
                 targetValue = if (isSelected) 1.3f else 0.7f,
-                animationSpec = spring(dampingRatio = 0.5f, stiffness = 400f),
+                animationSpec = spring(dampingRatio = 0.6f, stiffness = 400f),
                 label = "dotScale"
             )
-            val dotAlpha by animateFloatAsState(
-                targetValue = if (isSelected) 1f else 0.4f,
+            val dotAlpha = animateFloatAsState(
+                targetValue = if (isSelected) 1f else 0.45f,
                 animationSpec = tween(200),
                 label = "dotAlpha"
             )
@@ -271,14 +227,11 @@ fun AnimatedPageIndicator(
                 modifier = Modifier
                     .size(6.dp)
                     .graphicsLayer {
-                        scaleX = dotScale
-                        scaleY = dotScale
-                        alpha = dotAlpha
+                        scaleX = dotScale.value
+                        scaleY = dotScale.value
+                        alpha = dotAlpha.value
                     }
-                    .background(
-                        color = if (isSelected) Color.White else Color.White.copy(alpha = 0.5f),
-                        shape = CircleShape
-                    )
+                    .background(color = Color.White, shape = CircleShape)
             )
         }
     }
@@ -299,7 +252,7 @@ fun GlassSlider(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(label, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+                Text(label, color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
                 Text(
                     String.format("%.0f", value),
                     color = Color.White,
@@ -314,8 +267,8 @@ fun GlassSlider(
             valueRange = valueRange,
             colors = SliderDefaults.colors(
                 thumbColor = Color.White,
-                activeTrackColor = Color.White.copy(alpha = 0.7f),
-                inactiveTrackColor = Color.White.copy(alpha = 0.15f),
+                activeTrackColor = Color.White.copy(alpha = 0.9f),
+                inactiveTrackColor = Color.White.copy(alpha = 0.24f),
                 activeTickColor = Color.Transparent,
                 inactiveTickColor = Color.Transparent
             ),
@@ -334,22 +287,22 @@ fun AnimatedPressIcon(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.85f else 1f,
-        animationSpec = spring(dampingRatio = 0.3f, stiffness = 800f),
+    val pressScale = animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = 900f),
         label = "pressScale"
     )
-    val pressAlpha by animateFloatAsState(
+    val pressAlpha = animateFloatAsState(
         targetValue = if (isPressed) 0.7f else 1f,
-        animationSpec = spring(dampingRatio = 0.5f, stiffness = 600f),
+        animationSpec = tween(90),
         label = "pressAlpha"
     )
     Box(
         modifier = modifier
             .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-                alpha = pressAlpha
+                scaleX = pressScale.value
+                scaleY = pressScale.value
+                alpha = pressAlpha.value
             }
             .clickable(
                 interactionSource = interactionSource,
@@ -368,7 +321,7 @@ fun ShimmerBox(
     shape: RoundedCornerShape = RoundedCornerShape(4.dp)
 ) {
     val shimmerTransition = rememberInfiniteTransition(label = "shimmerBox")
-    val shimmerAlpha by shimmerTransition.animateFloat(
+    val shimmerAlpha = shimmerTransition.animateFloat(
         initialValue = 0.1f,
         targetValue = 0.35f,
         animationSpec = infiniteRepeatable(
@@ -380,6 +333,6 @@ fun ShimmerBox(
     Box(
         modifier = modifier
             .clip(shape)
-            .background(Color.White.copy(alpha = shimmerAlpha))
+            .drawBehind { drawRect(Color.White, alpha = shimmerAlpha.value) }
     )
 }

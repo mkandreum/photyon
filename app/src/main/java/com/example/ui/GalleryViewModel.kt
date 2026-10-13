@@ -22,6 +22,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class GalleryViewModel(
@@ -51,27 +54,23 @@ class GalleryViewModel(
     fun drillDownMonth(month: String) { _selectedMonth.value = month }
     fun resetDrillDown() { _selectedYear.value = null; _selectedMonth.value = null }
 
-    private fun extractYear(dateSec: Long): String {
-        val c = java.util.Calendar.getInstance()
-        c.timeInMillis = dateSec * 1000
-        return c.get(java.util.Calendar.YEAR).toString()
-    }
-
-    private val monthNames = listOf(
-        "Enero","Febrero","Marzo","Abril","Mayo","Junio",
-        "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
-    )
-
-    private fun extractMonthLabel(dateSec: Long): String {
-        val c = java.util.Calendar.getInstance()
-        c.timeInMillis = dateSec * 1000
-        return monthNames[c.get(java.util.Calendar.MONTH)]
-    }
-
-    private fun extractMonthYearLabel(dateSec: Long): String {
-        val c = java.util.Calendar.getInstance()
-        c.timeInMillis = dateSec * 1000
-        return "${monthNames[c.get(java.util.Calendar.MONTH)]} ${c.get(java.util.Calendar.YEAR)}"
+    /** Fast year/month lookup; one Calendar per computation (Calendar is not thread-safe). */
+    private class DateKeys {
+        private val cal = java.util.Calendar.getInstance()
+        private fun set(dateSec: Long) { cal.timeInMillis = dateSec * 1000 }
+        fun year(dateSec: Long): String { set(dateSec); return cal.get(java.util.Calendar.YEAR).toString() }
+        fun month(dateSec: Long): String { set(dateSec); return monthName(cal.get(java.util.Calendar.MONTH)) }
+        fun monthYear(dateSec: Long): String {
+            set(dateSec)
+            return "${monthName(cal.get(java.util.Calendar.MONTH))} ${cal.get(java.util.Calendar.YEAR)}"
+        }
+        private fun monthName(i: Int) = MONTHS[i]
+        companion object {
+            val MONTHS = listOf(
+                "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
+            )
+        }
     }
 
     data class YearSection(val year: String, val items: List<MediaItem>)
@@ -92,34 +91,38 @@ class GalleryViewModel(
     private val _activeDetailItem = MutableStateFlow<MediaItem?>(null)
     val activeDetailItem: StateFlow<MediaItem?> = _activeDetailItem.asStateFlow()
 
+    private val shared = SharingStarted.WhileSubscribed(5_000)
+
     // Full catalog list from repository
     val rawMediaItems: StateFlow<List<MediaItem>> = repository.getMediaFlow()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Lazily,
-            initialValue = emptyList()
-        )
+        .stateIn(viewModelScope, shared, emptyList())
 
-    // Filtered media items to show in grid (respect searchQuery & exclude hidden items unless checking hidden album)
+    /** Non-hidden catalog, computed once and reused by every derived list. */
+    private val nonHiddenItems: StateFlow<List<MediaItem>> = rawMediaItems
+        .map { items -> items.filter { !it.isHidden } }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, shared, emptyList())
+
+    // Debounced query (clearing is immediate); the text field keeps using searchQuery directly
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private val effectiveQuery = _searchQuery
+        .debounce { if (it.isEmpty()) 0L else 200L }
+        .map { it.trim() }
+        .distinctUntilChanged()
+
+    // Filtered media items to show in grid (respect searchQuery & exclude hidden items)
     val visibleMediaItems: StateFlow<List<MediaItem>> = combine(
-        rawMediaItems,
-        _searchQuery
+        nonHiddenItems,
+        effectiveQuery
     ) { items, query ->
-        var filtered = items.filter { !it.isHidden }
-        if (query.isNotEmpty()) {
-            filtered = filtered.filter {
-                it.displayName.contains(query, ignoreCase = true) ||
-                        (it.location?.contains(query, ignoreCase = true) == true)
-            }
+        if (query.isEmpty()) items
+        else items.filter {
+            it.displayName.contains(query, ignoreCase = true) ||
+                    (it.location?.contains(query, ignoreCase = true) == true)
         }
-        filtered
     }
     .flowOn(Dispatchers.Default)
-    .stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.Lazily,
-        initialValue = emptyList()
-    )
+    .stateIn(viewModelScope, shared, emptyList())
 
     // Override list for detail view pager (supports hidden items viewing)
     private val _detailListOverride = MutableStateFlow<List<MediaItem>?>(null)
@@ -129,49 +132,44 @@ class GalleryViewModel(
         visibleMediaItems
     ) { override, default ->
         override ?: default
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.Lazily,
-        initialValue = emptyList()
-    )
+    }.stateIn(viewModelScope, shared, emptyList())
 
-    // Exposed lists of custom groupings for the "Colecciones" screen:
-    val favoriteItems: StateFlow<List<MediaItem>> = rawMediaItems
-        .map { items ->
-            items.filter { it.isFavorite && !it.isHidden }
-        }
+    val favoriteItems: StateFlow<List<MediaItem>> = nonHiddenItems
+        .map { items -> items.filter { it.isFavorite } }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+        .stateIn(viewModelScope, shared, emptyList())
 
     // Hidden Items (the secure Hidden Album)
     val hiddenItems: StateFlow<List<MediaItem>> = rawMediaItems
-        .map { items ->
-            items.filter { it.isHidden }
-        }
+        .map { items -> items.filter { it.isHidden } }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+        .stateIn(viewModelScope, shared, emptyList())
 
-    // Memory cards list grouped dynamically
-    val memoryCollections: StateFlow<List<MemoryGroup>> = rawMediaItems
+    /** Cheap boolean for the nav-bar badge so it does not recompose on every list change. */
+    val hasHiddenItems: StateFlow<Boolean> = hiddenItems
+        .map { it.isNotEmpty() }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, shared, false)
+
+    // Memory cards list grouped dynamically by location
+    val memoryCollections: StateFlow<List<MemoryGroup>> = nonHiddenItems
         .map { items ->
-            // Group items representing locations, like "Peñíscola", "Albacete", "Madrid"
-            val valid = items.filter { !it.isHidden && !it.location.isNullOrEmpty() }
-            valid.groupBy { it.location }.map { (location, list) ->
-                MemoryGroup(
-                    location = location ?: "Viaje",
-                    year = list.firstOrNull()?.let {
-                        val cal = java.util.Calendar.getInstance()
-                        cal.timeInMillis = it.dateAdded * 1000
-                        cal.get(java.util.Calendar.YEAR).toString()
-                    } ?: "",
-                    description = "VIAJE",
-                    coverUri = list.firstOrNull()?.uri ?: "",
-                    items = list
-                )
-            }.sortedBy { it.location }
+            val keys = DateKeys()
+            items.asSequence()
+                .filter { !it.location.isNullOrEmpty() }
+                .groupBy { it.location!! }
+                .map { (location, list) ->
+                    MemoryGroup(
+                        location = location,
+                        year = list.firstOrNull()?.let { keys.year(it.dateAdded) } ?: "",
+                        description = "VIAJE",
+                        coverUri = list.firstOrNull()?.uri ?: "",
+                        items = list
+                    )
+                }.sortedBy { it.location }
         }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+        .stateIn(viewModelScope, shared, emptyList())
 
     // Custom Albums compiled from database custom album field
     val customAlbums: StateFlow<Map<String, List<MediaItem>>> = rawMediaItems
@@ -180,40 +178,43 @@ class GalleryViewModel(
                 .groupBy { it.customAlbum!! }
         }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyMap())
+        .stateIn(viewModelScope, shared, emptyMap())
 
-    val groupedYears: StateFlow<List<YearSection>> = rawMediaItems
+    val groupedYears: StateFlow<List<YearSection>> = nonHiddenItems
         .map { items ->
-            items.filter { !it.isHidden }
-                .groupBy { extractYear(it.dateAdded) }
+            val keys = DateKeys()
+            items.groupBy { keys.year(it.dateAdded) }
                 .map { (y, list) -> YearSection(y, list) }
                 .sortedByDescending { it.year }
         }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+        .stateIn(viewModelScope, shared, emptyList())
 
-    val groupedMonths: StateFlow<List<MonthSection>> = rawMediaItems
+    val groupedMonths: StateFlow<List<MonthSection>> = nonHiddenItems
         .map { items ->
-            items.filter { !it.isHidden }
-                .groupBy { extractMonthYearLabel(it.dateAdded) }
+            val keys = DateKeys()
+            items.groupBy { keys.monthYear(it.dateAdded) }
                 .map { (m, list) -> MonthSection(m, list) }
                 .sortedByDescending { it.items.firstOrNull()?.dateAdded ?: 0L }
         }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+        .stateIn(viewModelScope, shared, emptyList())
 
-    val drilledDownMonths: StateFlow<List<MonthSection>> = combine(rawMediaItems, _selectedYear) { items, year ->
-        val filtered = if (year != null) {
-            items.filter { !it.isHidden && extractYear(it.dateAdded) == year }
-        } else {
-            items.filter { !it.isHidden }
-        }
-        filtered.groupBy { extractMonthLabel(it.dateAdded) }
+    val drilledDownMonths: StateFlow<List<MonthSection>> = combine(nonHiddenItems, _selectedYear) { items, year ->
+        val keys = DateKeys()
+        val filtered = if (year != null) items.filter { keys.year(it.dateAdded) == year } else items
+        // Without a selected year, months from different years must not merge
+        filtered.groupBy { if (year != null) keys.month(it.dateAdded) else keys.monthYear(it.dateAdded) }
             .map { (m, list) -> MonthSection(m, list) }
             .sortedByDescending { it.items.firstOrNull()?.dateAdded ?: 0L }
     }
     .flowOn(Dispatchers.Default)
-    .stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+    .stateIn(viewModelScope, shared, emptyList())
+
+    /** Called after the media permission result so the catalog loads without waiting for a MediaStore change. */
+    fun onMediaPermissionResult() {
+        repository.refresh()
+    }
 
     fun selectTab(tab: String) {
         _currentTab.value = tab
@@ -229,20 +230,12 @@ class GalleryViewModel(
     }
 
     fun toggleSelectionMode() {
-        if (_isSelectionModeActive.value) {
-            _selectedItems.value = emptySet()
-        }
-        _isSelectionModeActive.value = !_isSelectionModeActive.value
+        _selectedItems.value = emptySet()
+        _isSelectionModeActive.update { !it }
     }
 
     fun toggleItemSelection(id: String) {
-        val current = _selectedItems.value.toMutableSet()
-        if (current.contains(id)) {
-            current.remove(id)
-        } else {
-            current.add(id)
-        }
-        _selectedItems.value = current
+        _selectedItems.update { if (id in it) it - id else it + id }
     }
 
     fun setDetailItem(item: MediaItem?, sourceList: List<MediaItem>? = null) {
@@ -263,11 +256,9 @@ class GalleryViewModel(
     // Media actions
     fun toggleFavorite(item: MediaItem) {
         viewModelScope.launch {
-            repository.toggleFavorite(item.id, item.isFavorite)
+            val newValue = repository.toggleFavorite(item.id, item.isFavorite)
             // Update active detail reference to reflect immediate UI change
-            if (_activeDetailItem.value?.id == item.id) {
-                _activeDetailItem.value = _activeDetailItem.value?.copy(isFavorite = !item.isFavorite)
-            }
+            _activeDetailItem.update { if (it != null && it.id == item.id) it.copy(isFavorite = newValue) else it }
         }
     }
 
@@ -360,24 +351,26 @@ class GalleryViewModel(
     // Bulk selection actions
     fun bulkFavorite() {
         viewModelScope.launch {
-            val itemsToProcess = visibleMediaItems.value.filter { _selectedItems.value.contains(it.id) }
+            val ids = _selectedItems.value
+            val targets = visibleMediaItems.value.filter { it.id in ids }
+            // Mixed selection: favorite everything; all already favorite: unfavorite
+            val makeFavorite = targets.any { !it.isFavorite }
             withContext(Dispatchers.IO) {
-                itemsToProcess.forEach { item ->
-                    repository.toggleFavorite(item.id, item.isFavorite)
-                }
+                targets.forEach { repository.setFavorite(it.id, makeFavorite) }
             }
             toggleSelectionMode()
-            Toast.makeText(getApplication(), "Acción realizada en lote", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                getApplication(),
+                if (makeFavorite) "Añadido a favoritos" else "Quitado de favoritos",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
     fun bulkHide() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                _selectedItems.value.forEach { id ->
-                    repository.setHidden(id, true)
-                }
-            }
+            val ids = _selectedItems.value
+            withContext(Dispatchers.IO) { ids.forEach { repository.setHidden(it, true) } }
             toggleSelectionMode()
             Toast.makeText(getApplication(), "Elementos ocultados en lote", Toast.LENGTH_SHORT).show()
         }
@@ -385,11 +378,8 @@ class GalleryViewModel(
 
     fun bulkDelete() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                _selectedItems.value.forEach { id ->
-                    repository.setHidden(id, true)
-                }
-            }
+            val ids = _selectedItems.value
+            withContext(Dispatchers.IO) { ids.forEach { repository.setHidden(it, true) } }
             toggleSelectionMode()
             Toast.makeText(getApplication(), "Elementos eliminados en lote", Toast.LENGTH_SHORT).show()
         }

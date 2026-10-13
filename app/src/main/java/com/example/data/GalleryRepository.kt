@@ -13,6 +13,12 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -47,127 +53,78 @@ class GalleryRepository(
         return hasImages || hasVideos || hasPartial
     }
 
+    private class Columns(val uri: android.net.Uri, val isVideo: Boolean)
+
     @Suppress("DEPRECATION")
-    private fun fetchDeviceMedia(): List<MediaItem>? {
+    private suspend fun fetchDeviceMedia(): List<MediaItem>? {
         if (!hasReadPermission()) {
             Log.w("GalleryRepo", "Sync bypassed: Read media permissions are not granted yet.")
             return null
         }
-        val items = mutableListOf<MediaItem>()
+        val items = ArrayList<MediaItem>()
+        // Image and video MediaStore ids overlap, so videos get a prefix to keep ids unique.
+        queryMedia(Columns(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false), items)
+        queryMedia(Columns(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true), items)
+        items.sortByDescending { it.dateAdded }
+        return items
+    }
 
-        val imageUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val imageProjection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.DATE_ADDED,
-            MediaStore.Images.Media.SIZE,
-            MediaStore.Images.Media.WIDTH,
-            MediaStore.Images.Media.HEIGHT,
-            MediaStore.Images.Media.LATITUDE,
-            MediaStore.Images.Media.LONGITUDE
-        )
+    @Suppress("DEPRECATION")
+    private suspend fun queryMedia(src: Columns, out: MutableList<MediaItem>) {
+        val projection = buildList {
+            add(MediaStore.MediaColumns._ID)
+            add(MediaStore.MediaColumns.DISPLAY_NAME)
+            add(MediaStore.MediaColumns.DATE_ADDED)
+            add(MediaStore.MediaColumns.SIZE)
+            add(MediaStore.MediaColumns.WIDTH)
+            add(MediaStore.MediaColumns.HEIGHT)
+            if (src.isVideo) add(MediaStore.Video.Media.DURATION)
+            add(MediaStore.Images.Media.LATITUDE)
+            add(MediaStore.Images.Media.LONGITUDE)
+        }.toTypedArray()
         try {
             context.contentResolver.query(
-                imageUri, imageProjection, null, null,
-                "${MediaStore.Images.Media.DATE_ADDED} DESC"
+                src.uri, projection, null, null,
+                "${MediaStore.MediaColumns.DATE_ADDED} DESC"
             )?.use { cursor ->
-                val idIdx = cursor.getColumnIndex(MediaStore.Images.Media._ID)
-                val nameIdx = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
-                val dateIdx = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
-                val sizeIdx = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
-                val wIdx = cursor.getColumnIndex(MediaStore.Images.Media.WIDTH)
-                val hIdx = cursor.getColumnIndex(MediaStore.Images.Media.HEIGHT)
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                val nameIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                val dateIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
+                val sizeIdx = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                val wIdx = cursor.getColumnIndex(MediaStore.MediaColumns.WIDTH)
+                val hIdx = cursor.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
+                val durIdx = if (src.isVideo) cursor.getColumnIndex(MediaStore.Video.Media.DURATION) else -1
                 val latIdx = cursor.getColumnIndex(MediaStore.Images.Media.LATITUDE)
                 val lonIdx = cursor.getColumnIndex(MediaStore.Images.Media.LONGITUDE)
+                if (idIdx == -1 || nameIdx == -1) return@use
 
+                var n = 0
                 while (cursor.moveToNext()) {
+                    // Allow cancellation (a newer sync supersedes this one) on big libraries
+                    if (++n and 0xFF == 0) currentCoroutineContext().ensureActive()
                     val id = cursor.getLong(idIdx)
-                    val contentUri = ContentUris.withAppendedId(imageUri, id)
                     val name = cursor.getString(nameIdx) ?: continue
-                    val dateAdded = if (dateIdx != -1) cursor.getLong(dateIdx) else 0L
-                    val size = if (sizeIdx != -1) cursor.getLong(sizeIdx) else 0L
-                    val width = if (wIdx != -1) cursor.getInt(wIdx) else 0
-                    val height = if (hIdx != -1) cursor.getInt(hIdx) else 0
-                    val location = readLocation(latIdx, lonIdx, cursor)
-
-                    items.add(
+                    out.add(
                         MediaItem(
-                            id = id.toString(),
-                            uri = contentUri.toString(),
+                            id = if (src.isVideo) "v$id" else id.toString(),
+                            uri = ContentUris.withAppendedId(src.uri, id).toString(),
                             displayName = name,
-                            dateAdded = dateAdded,
-                            size = size,
-                            width = width,
-                            height = height,
-                            location = location,
-                            isVideo = false
+                            dateAdded = if (dateIdx != -1) cursor.getLong(dateIdx) else 0L,
+                            size = if (sizeIdx != -1) cursor.getLong(sizeIdx) else 0L,
+                            width = if (wIdx != -1) cursor.getInt(wIdx) else 0,
+                            height = if (hIdx != -1) cursor.getInt(hIdx) else 0,
+                            duration = if (durIdx != -1) cursor.getLong(durIdx) else null,
+                            location = readLocation(latIdx, lonIdx, cursor),
+                            isVideo = src.isVideo
                         )
                     )
                 }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e("GalleryRepo", "Error fetching images from MediaStore", e)
+            Log.e("GalleryRepo", "Error fetching ${if (src.isVideo) "videos" else "images"} from MediaStore", e)
         }
-
-        val videoUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        val videoProjection = arrayOf(
-            MediaStore.Video.Media._ID,
-            MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.DATE_ADDED,
-            MediaStore.Video.Media.SIZE,
-            MediaStore.Video.Media.WIDTH,
-            MediaStore.Video.Media.HEIGHT,
-            MediaStore.Video.Media.DURATION,
-            MediaStore.Video.Media.LATITUDE,
-            MediaStore.Video.Media.LONGITUDE
-        )
-        try {
-            context.contentResolver.query(
-                videoUri, videoProjection, null, null,
-                "${MediaStore.Video.Media.DATE_ADDED} DESC"
-            )?.use { cursor ->
-                val idIdx = cursor.getColumnIndex(MediaStore.Video.Media._ID)
-                val nameIdx = cursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
-                val dateIdx = cursor.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
-                val sizeIdx = cursor.getColumnIndex(MediaStore.Video.Media.SIZE)
-                val wIdx = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
-                val hIdx = cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)
-                val durIdx = cursor.getColumnIndex(MediaStore.Video.Media.DURATION)
-                val latIdx = cursor.getColumnIndex(MediaStore.Video.Media.LATITUDE)
-                val lonIdx = cursor.getColumnIndex(MediaStore.Video.Media.LONGITUDE)
-
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idIdx)
-                    val contentUri = ContentUris.withAppendedId(videoUri, id)
-                    val name = cursor.getString(nameIdx) ?: continue
-                    val dateAdded = if (dateIdx != -1) cursor.getLong(dateIdx) else 0L
-                    val size = if (sizeIdx != -1) cursor.getLong(sizeIdx) else 0L
-                    val width = if (wIdx != -1) cursor.getInt(wIdx) else 0
-                    val height = if (hIdx != -1) cursor.getInt(hIdx) else 0
-                    val duration = if (durIdx != -1) cursor.getLong(durIdx) else 0L
-                    val location = readLocation(latIdx, lonIdx, cursor)
-
-                    items.add(
-                        MediaItem(
-                            id = id.toString(),
-                            uri = contentUri.toString(),
-                            displayName = name,
-                            dateAdded = dateAdded,
-                            size = size,
-                            width = width,
-                            height = height,
-                            duration = duration,
-                            location = location,
-                            isVideo = true
-                        )
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("GalleryRepo", "Error fetching videos from MediaStore", e)
-        }
-
-        return items.sortedByDescending { it.dateAdded }
     }
 
     private fun readLocation(
@@ -180,7 +137,17 @@ class GalleryRepository(
         return String.format(Locale.US, "%.4f, %.4f", lat, lon)
     }
 
-    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private val refreshRequests = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    /** Forces a MediaStore re-scan (e.g. right after the user grants media permissions). */
+    fun refresh() {
+        refreshRequests.tryEmit(Unit)
+    }
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun startSync(scope: kotlinx.coroutines.CoroutineScope) {
         scope.launch(Dispatchers.IO) {
             val contentFlow = callbackFlow {
@@ -209,11 +176,11 @@ class GalleryRepository(
                     }
                 }
             }
-            contentFlow
-                .debounce(100L)
-                .collect {
+            merge(contentFlow, refreshRequests)
+                .debounce(150L)
+                .collectLatest {
                     try {
-                        val deviceMedia = fetchDeviceMedia() ?: return@collect
+                        val deviceMedia = fetchDeviceMedia() ?: return@collectLatest
                         val cached = deviceMedia.map {
                             CachedMediaItem(
                                 id = it.id,
@@ -229,6 +196,8 @@ class GalleryRepository(
                             )
                         }
                         cachedMediaDao.syncMedia(cached)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e("GalleryRepo", "Error syncing MediaStore with Room", e)
                     }
@@ -239,7 +208,8 @@ class GalleryRepository(
     fun getMediaFlow(): Flow<List<MediaItem>> {
         return combine(cachedMediaDao.getAllCachedMedia(), mediaOverrideDao.getAllOverrides()) { dbItems, overrides ->
             val overridesMap = overrides.associateBy { it.mediaId }
-            val mergedList = mutableListOf<MediaItem>()
+            val mergedList = ArrayList<MediaItem>(dbItems.size + 8)
+            val dbById = dbItems.associateBy { it.id }
 
             dbItems.forEach { dbItem ->
                 val override = overridesMap[dbItem.id]
@@ -266,11 +236,10 @@ class GalleryRepository(
                 )
             }
 
-            val existingIds = dbItems.map { it.id }.toSet()
             overrides.forEach { override ->
-                if (override.mediaId !in existingIds) {
+                if (override.mediaId !in dbById) {
                     val baseId = override.mediaId.substringBefore("_duplicate_")
-                    val baseItem = dbItems.firstOrNull { it.id == baseId }
+                    val baseItem = dbById[baseId]
                     if (baseItem != null) {
                         mergedList.add(
                             MediaItem(
@@ -298,7 +267,7 @@ class GalleryRepository(
                 }
             }
 
-            mergedList.distinctBy { it.id }.sortedByDescending { it.dateAdded }
+            mergedList.sortedByDescending { it.dateAdded }
         }.flowOn(Dispatchers.Default)
     }
 
@@ -321,11 +290,22 @@ class GalleryRepository(
         mediaOverrideDao.insertOverride(updated)
     }
 
-    suspend fun toggleFavorite(mediaId: String, currentFavorite: Boolean) = withContext(Dispatchers.IO) {
+    /** Flips the stored favorite flag (DB is the source of truth) and returns the new value. */
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun toggleFavorite(mediaId: String, currentFavorite: Boolean): Boolean = withContext(Dispatchers.IO) {
         val existing = mediaOverrideDao.getOverrideById(mediaId)
-        val updated = existing?.copy(isFavorite = !currentFavorite)
-            ?: MediaOverride(mediaId = mediaId, isFavorite = !currentFavorite)
-        mediaOverrideDao.insertOverride(updated)
+        val newValue = !(existing?.isFavorite ?: false)
+        mediaOverrideDao.insertOverride(
+            existing?.copy(isFavorite = newValue) ?: MediaOverride(mediaId = mediaId, isFavorite = newValue)
+        )
+        newValue
+    }
+
+    suspend fun setFavorite(mediaId: String, favorite: Boolean) = withContext(Dispatchers.IO) {
+        val existing = mediaOverrideDao.getOverrideById(mediaId)
+        mediaOverrideDao.insertOverride(
+            existing?.copy(isFavorite = favorite) ?: MediaOverride(mediaId = mediaId, isFavorite = favorite)
+        )
     }
 
     suspend fun setHidden(mediaId: String, isHidden: Boolean) = withContext(Dispatchers.IO) {

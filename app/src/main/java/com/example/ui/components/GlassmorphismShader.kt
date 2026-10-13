@@ -1,10 +1,25 @@
 package com.example.ui.components
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.dp
+import com.example.ui.theme.GlassBarBorder
+import com.example.ui.theme.GlassSpecular
 import org.intellij.lang.annotations.Language
 
 @Language("AGSL")
@@ -17,175 +32,88 @@ val LIQUID_GLASS_SHADER = """
     uniform float4 selectBtnRect;     // [left, top, right, bottom]
     uniform float4 collapsedFabRect;  // [left, top, right, bottom]
     uniform float4 pageIndicatorRect; // [left, top, right, bottom]
-    uniform float2 resolution;
+
+    uniform float4 bounds;           // union of all rects, expanded; early-out outside
+
+    bool inRect(float2 c, float4 r) {
+        return c.x >= r.x - 2.0 && c.x <= r.z + 2.0 && c.y >= r.y - 2.0 && c.y <= r.w + 2.0 &&
+               r.z > r.x && r.w > r.y;
+    }
 
     half4 applyGlassEffect(float2 coord, float4 rect, half4 baseColor) {
         float2 size = rect.zw - rect.xy;
-        if (size.x <= 0.0 || size.y <= 0.0) return baseColor;
-
         float2 center = (rect.xy + rect.zw) * 0.5;
-        float r = size.y * 0.5; // corner radius for capsule/pill shape
-
-        // 1. Calculate Signed Distance Field (SDF) of the rounded pill shape
+        float r = size.y * 0.5;
         float2 halfSize = size * 0.5;
-        float2 pos = abs(coord - center);
-        float2 q = pos - (halfSize - r);
+        float2 local = coord - center;
+
+        // Rounded pill SDF
+        float2 q = abs(local) - (halfSize - r);
         float sdf = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
-
-        // Expand the boundary check to 1.5 pixels to cover anti-aliased Compose borders
         if (sdf > 1.5) return baseColor;
-
-        // Calculate a smooth edge alpha (1.0 inside, fading to 0.0 at 1.5px outside)
         float edgeAlpha = 1.0 - smoothstep(0.0, 1.5, sdf);
 
-        // 2. Define responsive bevel boundary (20px width) and calculate normalized distance inside it
         float w = min(r * 0.85, 20.0);
-        float d = -sdf; // distance from edge (positive inside)
-        float u = clamp(d / w, 0.0, 1.0); // 0.0 at outer edge, 1.0 at flat center
+        float u = clamp(-sdf / w, 0.0, 1.0);
+        float inv = 1.0 - u;
+        float normalTilt = inv * sqrt(inv);
 
-        // Curvature profile that goes to 0.0 at the flat center (u = 1.0)
-        float normalTilt = pow(1.0 - u, 1.5);
-
-        // 3. Surface normal pointing outward from the pill boundary
-        float2 capCenterOffset = float2(max(0.0, halfSize.x - r), 0.0);
-        float2 localCapCoord = coord - center;
-        
+        // Outward direction from the nearest cap centre
+        float capX = max(0.0, halfSize.x - r);
         float2 dir;
-        if (abs(localCapCoord.x) > capCenterOffset.x) {
-            float2 capCenter = center + sign(localCapCoord.x) * capCenterOffset;
-            float2 diff = coord - capCenter;
+        if (abs(local.x) > capX) {
+            float2 diff = float2(local.x - sign(local.x) * capX, local.y);
             float len = length(diff);
-            dir = len > 0.001 ? diff / len : float2(sign(localCapCoord.x), 0.0);
+            dir = len > 0.001 ? diff / len : float2(sign(local.x), 0.0);
         } else {
-            dir = float2(0.0, localCapCoord.y >= 0.0 ? 1.0 : -1.0);
+            dir = float2(0.0, local.y >= 0.0 ? 1.0 : -1.0);
         }
 
-        // Compute 3D surface normal: curves at the 20px bevel, flat N = (0,0,1) in the center
         float3 N = normalize(float3(dir * normalTilt * 2.5, 1.0));
 
-        // 4. Snell's Law Refraction displacement (Inward direction for magnifying glass/lupa)
-        float eta = 0.55; // High refractive index for magnifying bevel
-        float k = 1.0 - eta * eta * (1.0 - N.z * N.z);
-        float refractScale = sqrt(k) - eta * N.z;
-        
-        // Disable distortion completely outside the pill to keep edges perfectly clean
-        float edgeDistortionScale = clamp(1.0 - sdf, 0.0, 1.0);
-        float2 distortion = -dir * (refractScale * normalTilt * (r * 0.8) * edgeDistortionScale);
-        
-        float2 distortedCoord = coord + distortion;
+        // Cheap refraction (eta = 0.55)
+        float k = 1.0 - 0.3025 * (1.0 - N.z * N.z);
+        float refractScale = sqrt(k) - 0.55 * N.z;
+        float2 distortion = -dir * (refractScale * normalTilt * (r * 0.8) * clamp(1.0 - sdf, 0.0, 1.0));
+        float2 dc = coord + distortion;
 
-        // 5. Chromatic aberration: split RGB slightly (reduced aberration)
-        float2 rCoord = coord + distortion * 1.08;
-        float2 bCoord = coord + distortion * 0.93;
+        // 5 taps total: 3 for green (centre + 2 diagonal blur), 1 red, 1 blue
+        half4 g0 = image.eval(dc);
+        half4 g1 = image.eval(dc + float2(-1.5, -1.5));
+        half4 g2 = image.eval(dc + float2(1.5, 1.5));
+        half rr = image.eval(coord + distortion * 1.08).r;
+        half bb = image.eval(coord + distortion * 0.93).b;
+        half3 col = half3(rr, (g0.g + g1.g + g2.g) * 0.3333, bb);
 
-        // 6. Blur and sample each channel
-        float blurOff = 2.0;
-        float2 c0 = clamp(distortedCoord, float2(0.0), resolution);
-        float2 c1 = clamp(distortedCoord + float2(-blurOff, 0.0), float2(0.0), resolution);
-        float2 c2 = clamp(distortedCoord + float2(blurOff, 0.0), float2(0.0), resolution);
-        float2 c3 = clamp(distortedCoord + float2(0.0, -blurOff), float2(0.0), resolution);
-        float2 c4 = clamp(distortedCoord + float2(0.0, blurOff), float2(0.0), resolution);
+        col = mix(col, half3(0.08), 0.266);
 
-        float2 r0 = clamp(rCoord, float2(0.0), resolution);
-        float2 r1 = clamp(rCoord + float2(-blurOff, 0.0), float2(0.0), resolution);
-        float2 r2 = clamp(rCoord + float2(blurOff, 0.0), float2(0.0), resolution);
-        float2 r3 = clamp(rCoord + float2(0.0, -blurOff), float2(0.0), resolution);
-        float2 r4 = clamp(rCoord + float2(0.0, blurOff), float2(0.0), resolution);
-
-        float2 b0 = clamp(bCoord, float2(0.0), resolution);
-        float2 b1 = clamp(bCoord + float2(-blurOff, 0.0), float2(0.0), resolution);
-        float2 b2 = clamp(bCoord + float2(blurOff, 0.0), float2(0.0), resolution);
-        float2 b3 = clamp(bCoord + float2(0.0, -blurOff), float2(0.0), resolution);
-        float2 b4 = clamp(bCoord + float2(0.0, blurOff), float2(0.0), resolution);
-
-        half4 color;
-        color.r = (
-            image.eval(r0).r + image.eval(r1).r + image.eval(r2).r +
-            image.eval(r3).r + image.eval(r4).r
-        ) * 0.2;
-        color.g = (
-            image.eval(c0).g + image.eval(c1).g + image.eval(c2).g +
-            image.eval(c3).g + image.eval(c4).g
-        ) * 0.2;
-        color.b = (
-            image.eval(b0).b + image.eval(b1).b + image.eval(b2).b +
-            image.eval(b3).b + image.eval(b4).b
-        ) * 0.2;
-        color.a = 1.0;
-
-        // Apply a base dark glass tint across the entire card
-        half3 baseFill = half3(0.08, 0.08, 0.08); // matches GlassBarFill (0x141414)
-        color.rgb = mix(color.rgb, baseFill, 0.266);
-
-        // 7. 3D curved glass shading
-        // Light direction from top-left, slightly forward
-        float3 L = normalize(float3(-1.0, -1.0, 1.8));
+        float3 L = float3(-0.4417, -0.4417, 0.7951);
         float dotNL = clamp(dot(N, L), 0.0, 1.0);
-        
-        // Single clean outer highlight (no double reflection lines)
-        float outerHighlight = pow(1.0 - u, 10.0) * 0.65 * (0.4 + 0.6 * dotNL);
-        
-        // Edge shadow: dark contour ring simulating thickness & total internal reflection
-        float edgeShadow = 1.0 - pow(1.0 - u, 6.0) * 0.45 * (1.0 - 0.4 * dotNL);
-        
-        color.rgb *= edgeShadow;
-        color.rgb += half3(outerHighlight * 0.9, outerHighlight * 0.95, outerHighlight);
+        float i2 = inv * inv;
+        float i4 = i2 * i2;
+        float i8 = i4 * i4;
+        float outerHighlight = i8 * i2 * 0.65 * (0.4 + 0.6 * dotNL);
+        float edgeShadow = 1.0 - i4 * i2 * 0.45 * (1.0 - 0.4 * dotNL);
 
-        // 8. Cool glass tint fading to interior
-        half3 glassTint = half3(0.92, 0.96, 1.0);
-        color.rgb = mix(color.rgb, glassTint, 0.07 * (1.0 - u));
+        col *= half(edgeShadow);
+        col += half3(outerHighlight * 0.9, outerHighlight * 0.95, outerHighlight);
+        col = mix(col, half3(0.92, 0.96, 1.0), 0.07 * inv);
 
-        // 9. Smoothly blend the glass overlay with the background at the outer edge
-        return mix(baseColor, color, edgeAlpha);
+        return mix(baseColor, half4(col, 1.0), edgeAlpha);
     }
 
     half4 main(float2 fragCoord) {
         half4 baseColor = image.eval(fragCoord);
+        if (fragCoord.x < bounds.x || fragCoord.x > bounds.z ||
+            fragCoord.y < bounds.y || fragCoord.y > bounds.w) return baseColor;
 
-        // Expand bounds by 2.0 pixels to cover anti-aliased Compose borders
-        bool inDensityBar = (fragCoord.x >= densityBarRect.x - 2.0 && fragCoord.x <= densityBarRect.z + 2.0 &&
-                             fragCoord.y >= densityBarRect.y - 2.0 && fragCoord.y <= densityBarRect.w + 2.0);
-
-        bool inMainBar = (fragCoord.x >= barRect.x - 2.0 && fragCoord.x <= barRect.z + 2.0 &&
-                          fragCoord.y >= barRect.y - 2.0 && fragCoord.y <= barRect.w + 2.0);
-
-        bool inSearchBar = (fragCoord.x >= searchBarRect.x - 2.0 && fragCoord.x <= searchBarRect.z + 2.0 &&
-                            fragCoord.y >= searchBarRect.y - 2.0 && fragCoord.y <= searchBarRect.w + 2.0);
-
-        bool inSearchFab = (fragCoord.x >= searchFabRect.x - 2.0 && fragCoord.x <= searchFabRect.z + 2.0 &&
-                            fragCoord.y >= searchFabRect.y - 2.0 && fragCoord.y <= searchFabRect.w + 2.0);
-
-        bool inPageIndicator = (fragCoord.x >= pageIndicatorRect.x - 2.0 && fragCoord.x <= pageIndicatorRect.z + 2.0 &&
-                                fragCoord.y >= pageIndicatorRect.y - 2.0 && fragCoord.y <= pageIndicatorRect.w + 2.0);
-
-        if (inDensityBar) {
-            return applyGlassEffect(fragCoord, densityBarRect, baseColor);
-        }
-        if (inMainBar) {
-            return applyGlassEffect(fragCoord, barRect, baseColor);
-        }
-        if (inSearchBar) {
-            return applyGlassEffect(fragCoord, searchBarRect, baseColor);
-        }
-        if (inSearchFab) {
-            return applyGlassEffect(fragCoord, searchFabRect, baseColor);
-        }
-        if (inPageIndicator) {
-            return applyGlassEffect(fragCoord, pageIndicatorRect, baseColor);
-        }
-
-        bool inSelectBtn = (fragCoord.x >= selectBtnRect.x - 2.0 && fragCoord.x <= selectBtnRect.z + 2.0 &&
-                            fragCoord.y >= selectBtnRect.y - 2.0 && fragCoord.y <= selectBtnRect.w + 2.0);
-        if (inSelectBtn) {
-            return applyGlassEffect(fragCoord, selectBtnRect, baseColor);
-        }
-
-        bool inCollapsedFab = (fragCoord.x >= collapsedFabRect.x - 2.0 && fragCoord.x <= collapsedFabRect.z + 2.0 &&
-                               fragCoord.y >= collapsedFabRect.y - 2.0 && fragCoord.y <= collapsedFabRect.w + 2.0);
-        if (inCollapsedFab) {
-            return applyGlassEffect(fragCoord, collapsedFabRect, baseColor);
-        }
-
+        if (inRect(fragCoord, densityBarRect)) return applyGlassEffect(fragCoord, densityBarRect, baseColor);
+        if (inRect(fragCoord, barRect)) return applyGlassEffect(fragCoord, barRect, baseColor);
+        if (inRect(fragCoord, searchBarRect)) return applyGlassEffect(fragCoord, searchBarRect, baseColor);
+        if (inRect(fragCoord, searchFabRect)) return applyGlassEffect(fragCoord, searchFabRect, baseColor);
+        if (inRect(fragCoord, pageIndicatorRect)) return applyGlassEffect(fragCoord, pageIndicatorRect, baseColor);
+        if (inRect(fragCoord, selectBtnRect)) return applyGlassEffect(fragCoord, selectBtnRect, baseColor);
+        if (inRect(fragCoord, collapsedFabRect)) return applyGlassEffect(fragCoord, collapsedFabRect, baseColor);
         return baseColor;
     }
 """.trimIndent()
@@ -281,4 +209,113 @@ fun Modifier.liquidGlassBackdrop(
     } else {
         Modifier
     }
+}
+
+private const val RECT_COUNT = 7
+private const val CACHE_SIZE = RECT_COUNT * 4 + 2
+
+private val RECT_UNIFORMS = arrayOf(
+    "barRect", "densityBarRect", "searchBarRect", "searchFabRect",
+    "selectBtnRect", "collapsedFabRect", "pageIndicatorRect"
+)
+
+private class GlassEffectCache {
+    val last = FloatArray(CACHE_SIZE) { Float.NaN }
+    val cur = FloatArray(CACHE_SIZE)
+    var effect: androidx.compose.ui.graphics.RenderEffect? = null
+}
+
+fun Modifier.liquidGlassBackdrop(
+    mainBarRect: () -> Rect,
+    densityBarRect: () -> Rect,
+    searchBarRect: () -> Rect,
+    searchFabRect: () -> Rect,
+    selectBtnRect: () -> Rect = { Rect.Zero },
+    collapsedFabRect: () -> Rect = { Rect.Zero },
+    pageIndicatorRect: () -> Rect = { Rect.Zero }
+): Modifier = composed {
+    val shader = remember {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            try { android.graphics.RuntimeShader(LIQUID_GLASS_SHADER) } catch (e: Throwable) { null }
+        } else null
+    }
+    val cache = remember { GlassEffectCache() }
+    var failed by remember { mutableStateOf(false) }
+
+    if (shader != null && !failed) {
+        Modifier.graphicsLayer {
+            try {
+                val cur = cache.cur
+                val rects = arrayOf(
+                    mainBarRect(), densityBarRect(), searchBarRect(), searchFabRect(),
+                    selectBtnRect(), collapsedFabRect(), pageIndicatorRect()
+                )
+                var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+                var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+                for (i in 0 until RECT_COUNT) {
+                    val r = rects[i]
+                    cur[i * 4] = r.left; cur[i * 4 + 1] = r.top
+                    cur[i * 4 + 2] = r.right; cur[i * 4 + 3] = r.bottom
+                    if (r.width > 0f && r.height > 0f) {
+                        if (r.left < minX) minX = r.left
+                        if (r.top < minY) minY = r.top
+                        if (r.right > maxX) maxX = r.right
+                        if (r.bottom > maxY) maxY = r.bottom
+                    }
+                }
+                val empty = minX > maxX
+                // Quantize to avoid rebuilding for sub-pixel jitter
+                for (i in 0 until RECT_COUNT * 4) cur[i] = Math.round(cur[i] * 2f) / 2f
+                cur[RECT_COUNT * 4] = if (empty) 0f else minX - 2f
+                cur[RECT_COUNT * 4 + 1] = if (empty) 0f else minY - 2f
+
+                if (!java.util.Arrays.equals(cur, cache.last) || cache.effect == null) {
+                    for (i in 0 until RECT_COUNT) {
+                        shader.setFloatUniform(
+                            RECT_UNIFORMS[i], cur[i * 4], cur[i * 4 + 1], cur[i * 4 + 2], cur[i * 4 + 3]
+                        )
+                    }
+                    if (empty) shader.setFloatUniform("bounds", 0f, 0f, 0f, 0f)
+                    else shader.setFloatUniform("bounds", minX - 2f, minY - 2f, maxX + 2f, maxY + 2f)
+                    cache.effect = android.graphics.RenderEffect
+                        .createRuntimeShaderEffect(shader, "image").asComposeRenderEffect()
+                    System.arraycopy(cur, 0, cache.last, 0, CACHE_SIZE)
+                }
+                renderEffect = cache.effect
+            } catch (e: Throwable) {
+                failed = true
+            }
+        }
+    } else {
+        // Fallback (API < 33 or shader failure): translucent glass overlay with border + highlight
+        Modifier.drawWithContent {
+            drawContent()
+            val rects = arrayOf(
+                mainBarRect(), densityBarRect(), searchBarRect(), searchFabRect(),
+                selectBtnRect(), collapsedFabRect(), pageIndicatorRect()
+            )
+            for (r in rects) drawFallbackGlass(r)
+        }
+    }
+}
+
+private fun DrawScope.drawFallbackGlass(r: Rect) {
+    if (r.width <= 0f || r.height <= 0f) return
+    val radius = CornerRadius(r.height / 2f)
+    val tl = Offset(r.left, r.top)
+    val sz = Size(r.width, r.height)
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            listOf(Color(0x30FFFFFF), Color(0x10FFFFFF), Color(0x20141414)),
+            startY = r.top, endY = r.bottom
+        ),
+        topLeft = tl, size = sz, cornerRadius = radius
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            listOf(GlassSpecular, GlassBarBorder, Color(0x14FFFFFF)),
+            startY = r.top, endY = r.bottom
+        ),
+        topLeft = tl, size = sz, cornerRadius = radius, style = Stroke(1.dp.toPx())
+    )
 }
