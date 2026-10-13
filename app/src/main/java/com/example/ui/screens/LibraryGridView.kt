@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import coil.compose.AsyncImage
+import com.example.ui.components.glassClickable
 import coil.request.ImageRequest
 import coil.request.CachePolicy
 import androidx.compose.ui.platform.LocalContext
@@ -62,7 +63,6 @@ import androidx.compose.animation.animateColorAsState
 import java.text.SimpleDateFormat
 import java.util.*
 
-private val videoThumbnailCache = android.util.LruCache<String, android.graphics.Bitmap>(100)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -413,7 +413,7 @@ fun LibraryGridView(
                                     if (isShaderActive) Color.Transparent else GlassBarBorder,
                                     CircleShape
                                 )
-                                .clickable(onClick = onSearchClick),
+                                .glassClickable(onClick = onSearchClick),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -426,7 +426,7 @@ fun LibraryGridView(
                     }
                     Box(
                         modifier = Modifier
-                            .height(48.dp)
+                            .height(40.dp)
                             .onGloballyPositioned { coords ->
                                 if (coords.isAttached) {
                                     onSelectBtnRectChanged(coords.boundsInRoot())
@@ -434,7 +434,7 @@ fun LibraryGridView(
                                     onSelectBtnRectChanged(androidx.compose.ui.geometry.Rect.Zero)
                                 }
                             }
-                            .clip(RoundedCornerShape(24.dp))
+                            .clip(RoundedCornerShape(20.dp))
                             .background(
                                 if (isSelectionMode) Color.White
                                 else if (isShaderActive) Color.Transparent else GlassBarFill
@@ -442,10 +442,10 @@ fun LibraryGridView(
                             .border(
                                 1.dp,
                                 if (isSelectionMode || isShaderActive) Color.Transparent else GlassBarBorder,
-                                RoundedCornerShape(24.dp)
+                                RoundedCornerShape(20.dp)
                             )
-                            .clickable { viewModel.toggleSelectionMode() }
-                            .padding(horizontal = 40.dp, vertical = 0.dp),
+                            .glassClickable { viewModel.toggleSelectionMode() }
+                            .padding(horizontal = 18.dp, vertical = 0.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -868,124 +868,24 @@ private fun GalleryGridItemCell(
         }
         val context = LocalContext.current
 
-        if (item.isVideo) {
-            var videoThumbBitmap by remember(item.uri) {
-                mutableStateOf<android.graphics.Bitmap?>(videoThumbnailCache.get(item.uri))
-            }
-
-            LaunchedEffect(item.uri) {
-                if (videoThumbBitmap == null) {
-                    val cached = videoThumbnailCache.get(item.uri)
-                    if (cached != null) {
-                        videoThumbBitmap = cached
-                    } else {
-                        val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            val cacheDir = java.io.File(context.cacheDir, "video_thumbnails")
-                            if (!cacheDir.exists()) {
-                                cacheDir.mkdirs()
-                            }
-                            val cachedFile = java.io.File(cacheDir, "${item.id}.webp")
-                            if (cachedFile.exists()) {
-                                try {
-                                    android.graphics.BitmapFactory.decodeFile(cachedFile.absolutePath)
-                                } catch (e: Exception) {
-                                    android.util.Log.e("GridCell", "Failed to decode cached WebP thumbnail: ${cachedFile.absolutePath}", e)
-                                    null
-                                }
-                            } else {
-                                val retriever = android.media.MediaMetadataRetriever()
-                                try {
-                                    retriever.setDataSource(context, android.net.Uri.parse(item.uri))
-                                    val frame = retriever.getFrameAtTime(0)
-                                    if (frame != null) {
-                                        val maxDim = 256
-                                        val w = frame.width
-                                        val h = frame.height
-                                        val scaled = if (w > maxDim || h > maxDim) {
-                                            val ratio = w.toFloat() / h.toFloat()
-                                            val (newW, newH) = if (ratio > 1f) {
-                                                Pair(maxDim, (maxDim / ratio).toInt())
-                                            } else {
-                                                Pair((maxDim * ratio).toInt(), maxDim)
-                                            }
-                                            android.graphics.Bitmap.createScaledBitmap(frame, newW, newH, true)
-                                        } else {
-                                            frame
-                                        }
-
-                                        var fos: java.io.FileOutputStream? = null
-                                        try {
-                                            fos = java.io.FileOutputStream(cachedFile)
-                                            scaled.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, 75, fos)
-                                        } catch (e: Exception) {
-                                            android.util.Log.e("GridCell", "Failed to save WebP to disk cache", e)
-                                        } finally {
-                                            fos?.close()
-                                        }
-
-                                        if (scaled != frame) {
-                                            frame.recycle()
-                                        }
-                                        scaled
-                                    } else {
-                                        null
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.e("GridCell", "video thumbnail failed: ${item.uri}", e)
-                                    null
-                                } finally {
-                                    retriever.release()
-                                }
-                            }
-                        }
-                        if (bitmap != null) {
-                            videoThumbnailCache.put(item.uri, bitmap)
-                            videoThumbBitmap = bitmap
-                        }
-                    }
-                }
-            }
-
-            if (videoThumbBitmap != null) {
-                isLoaded = true
-                androidx.compose.foundation.Image(
-                    bitmap = videoThumbBitmap!!.asImageBitmap(),
-                    contentDescription = item.displayName,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = itemPressScale
-                            scaleY = itemPressScale
-                        }
-                )
-            } else {
-                // Shimmer placeholder for video thumbnail loading
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = itemPressScale
-                            scaleY = itemPressScale
-                        }
-                        .drawBehind {
-                            drawRect(Color.DarkGray.copy(alpha = shimmerAlpha()))
-                        }
-                )
-            }
-        } else {
-            val imageUri = remember(item.uri) { android.net.Uri.parse(item.uri) }
-            val imageRequest = remember(item.uri, thumbnailSize) {
+        val thumbFile by produceState<java.io.File?>(
+            initialValue = com.example.data.ThumbnailStore.fileIfExists(context, item.id),
+            key1 = item.id
+        ) {
+            if (value == null) value = com.example.data.ThumbnailStore.ensure(context, item)
+        }
+        val thumb = thumbFile
+        if (thumb != null) {
+            val imageRequest = remember(thumb, thumbnailSize) {
                 ImageRequest.Builder(context)
-                    .data(imageUri)
+                    .data(thumb)
                     .size(thumbnailSize)
-                    .crossfade(120)
+                    .crossfade(100)
                     .build()
             }
             AsyncImage(
                 model = imageRequest,
                 onSuccess = { isLoaded = true },
-                onError = { android.util.Log.e("GridCell", "image load failed: ${item.uri}") },
                 contentDescription = item.displayName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier

@@ -27,6 +27,11 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.launch
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -97,10 +102,50 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
+        // Build the on-disk thumbnail cache once; afterwards only new media is processed.
+        lifecycleScope.launch {
+            viewModel.rawMediaItems
+                .filter { it.isNotEmpty() }
+                .distinctUntilChangedBy { it.size }
+                .collectLatest { items -> com.example.data.ThumbnailStore.preload(applicationContext, items) }
+        }
+
         setContent {
             MyApplicationTheme {
-                MainGalleryScreen(viewModel)
+                Box(Modifier.fillMaxSize()) {
+                    MainGalleryScreen(viewModel)
+                    ThumbnailProgressPill(Modifier.align(Alignment.TopCenter))
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun ThumbnailProgressPill(modifier: Modifier = Modifier) {
+    val progress by com.example.data.ThumbnailStore.progress.collectAsStateWithLifecycle()
+    val p = progress
+    AnimatedVisibility(
+        visible = p != null && p.firstRun,
+        enter = fadeIn(tween(200)) + slideInVertically(tween(250)) { -it },
+        exit = fadeOut(tween(250)) + slideOutVertically(tween(250)) { -it },
+        modifier = modifier.statusBarsPadding().padding(top = 8.dp)
+    ) {
+        val shown = p ?: return@AnimatedVisibility
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.Black.copy(alpha = 0.75f))
+                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(20.dp))
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            CircularProgressIndicator(
+                progress = { shown.done.toFloat() / shown.total.coerceAtLeast(1) },
+                modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White
+            )
+            Text("Preparando miniaturas ${shown.done}/${shown.total}", color = Color.White, fontSize = 12.sp)
         }
     }
 }
