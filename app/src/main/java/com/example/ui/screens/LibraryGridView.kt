@@ -702,7 +702,7 @@ fun LibraryGridView(
                             .background(Color.White.copy(alpha = 0.18f))
                             .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
                             .clickable(enabled = albumNameInput.isNotBlank()) {
-                                val item = longPressedItem ?: return@glassClickable
+                                val item = longPressedItem ?: return@clickable
                                 if (albumNameInput.isNotBlank()) {
                                     viewModel.addToAlbum(item, albumNameInput.trim())
                                     showAddAlbumDialog = false
