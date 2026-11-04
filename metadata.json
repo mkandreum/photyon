@@ -1,6 +1,6 @@
 {
-  "name": "Cristal",
-  "description": "Una galería de fotos premium con efecto cristal líquido, edición de metadatos, álbumes a medida y gestor de archivos reales.",
+  "name": "Photyon",
+  "description": "Galería de fotos y vídeos organizada por momentos: mosaico por días, dial de tiempo y visor con luz ambiental.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

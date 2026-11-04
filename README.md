@@ -1,60 +1,54 @@
 <div align="center">
 
-# 🪞 Liquid Glass Gallery
+# Photyon
 
-**Galería multimedia con interfaz de cristal líquido**
+**Tus fotos, ordenadas por lo que viviste**
 
 *Un producto de [Xyon Platforms](https://github.com/mkandreum)*
 
 ![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=flat&logo=kotlin&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-3DDC84?style=flat&logo=android&logoColor=white)
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-4285F4?style=flat&logo=jetpackcompose&logoColor=white)
-![Coil](https://img.shields.io/badge/Coil-FF6F00?style=flat&logo=coil&logoColor=white)
 
 </div>
 
 ---
 
-## ¿Qué es Liquid Glass Gallery?
+## ¿Qué es Photyon?
 
-Liquid Glass Gallery es una aplicación Android nativa desarrollada en Kotlin por Xyon Platforms que permite visualizar imágenes y vídeos con una interfaz de **cristal líquido** con efectos de refracción, distorsión tipo lupa y aberración cromática dinámica vía shaders AGSL.
+Photyon es una galería para Android que muestra las fotos y vídeos del móvil por momentos en lugar de como una cuadrícula de archivos. Funciona sin conexión: nada sale del dispositivo.
 
-## ✨ Funcionalidades
+## Funcionalidades
 
-- **Galería multimedia** con imágenes y vídeos del dispositivo
-- **Efecto cristal líquido** con distorsión tipo lupa, blur y aberración cromática en cada barra flotante
-- **Reproductor de vídeo** con barra de progreso glass, timer y controles con auto-hide
-- **Zoom interactivo** con gestos pinch-to-zoom y doble tap (1x–4x)
-- **Filtros de imagen** en tiempo real (brillo, contraste, saturación, rotación) con matriz de color
-- **Miniaturas de vídeo** generadas con `MediaMetadataRetriever`
-- **Navegación por swipe** con `HorizontalPager` y efecto parallax
-- **Modo selección múltiple** con acciones en lote
-- **Colecciones inteligentes** por ubicación, favoritos y álbumes personalizados
-- **Modo oculto** con autenticación biométrica
+- **Momentos**: mosaico por días; pellizca para pasar a meses y años
+- **Dial de tiempo**: salta por los años desde el borde de la pantalla
+- **La mesa**: visor con luz ambiental y tira de película con lupa; desliza hacia arriba para ver los detalles y hacia abajo para cerrar
+- **Vídeo** integrado en el visor
+- **Selección** arrastrando, con acciones en lote
+- **Recuerdos** de estos días en años anteriores
+- **Álbumes** del dispositivo y propios, favoritas y Oculto protegido con el bloqueo del móvil
+- **Búsqueda** por mes, año, álbum, nombre o tipo
+- **Ajustes de imagen** sin modificar el archivo original
+- **Papelera** del sistema al eliminar
 
-## 🛠️ Stack técnico
+## Stack técnico
 
 | Capa | Tecnología |
 |------|----------|
 | Lenguaje | Kotlin |
 | Plataforma | Android (minSdk 34, targetSdk 36) |
-| UI | Jetpack Compose + Material3 |
-| Imágenes | Coil (thumbnail + full-res) |
-| Vídeo | VideoView nativo |
-| Shaders | AGSL (RuntimeShader) vía `GraphicsLayer.renderEffect` |
-| Persistencia | Room (cache + metadatos) |
-| Arquitectura | MVVM (ViewModel + StateFlow) |
+| UI | Jetpack Compose + Material 3, sistema de diseño Noir |
+| Imágenes | Coil con miniaturas persistentes |
+| Vídeo | Media3 ExoPlayer |
+| Catálogo | MediaStore |
+| Datos del usuario | Room |
 
-## 🚀 Instalación
+## Compilar
 
 ```bash
-git clone https://github.com/mkandreum/liquidgallery.git
-cd liquidgallery
-# Abrir con Android Studio y compilar
+./gradlew :app:assembleRelease
 ```
 
-## 🏢 Xyon Platforms
-
-Liquid Glass Gallery es un producto desarrollado y mantenido por **Xyon Platforms**, empresa especializada en soluciones digitales para negocios locales y pymes.
+Sin clave de subida configurada, la build release se firma con `debug.keystore`.
 
 > © Xyon Platforms — Todos los derechos reservados
