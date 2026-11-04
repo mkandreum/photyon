@@ -1,5 +1,9 @@
 package com.example.ui
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,14 +55,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.Album
 import com.example.data.Library
 import com.example.data.MediaItem
+import com.example.data.Story
 import com.example.data.YearStat
 import com.example.data.dateLabel
 import com.example.ui.stories.StoriesRow
@@ -77,8 +86,12 @@ import com.example.ui.timeline.Density
 import com.example.ui.timeline.ThumbImage
 import com.example.ui.timeline.Timeline
 import com.example.ui.timeline.TimelineState
+import kotlinx.coroutines.isActive
 
 /* ---- Home hero ---- */
+
+/** "Hace un mes" is not a home headline: it belongs to the Recuerdos tab as one more card. */
+private val HOME_HIDDEN_STORIES = setOf("ago-1")
 
 @Composable
 fun HomeHero(
@@ -99,7 +112,14 @@ fun HomeHero(
     ) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             Wordmark()
-            val countLabel = if (library.complete) "${library.timeline.size} RECUERDOS" else "LEYENDO TU GALERÍA…"
+            val greeting = remember {
+                when (java.time.LocalTime.now().hour) {
+                    in 6..12 -> "BUENOS DÍAS"
+                    in 13..20 -> "BUENAS TARDES"
+                    else -> "BUENAS NOCHES"
+                }
+            }
+            val countLabel = if (library.complete) "$greeting · ${library.timeline.size} RECUERDOS" else "$greeting · LEYENDO TU GALERÍA…"
             Text(countLabel, style = MaterialTheme.typography.labelMedium, color = Darkroom.Muted)
         }
         LazyRow(
@@ -130,7 +150,103 @@ fun HomeHero(
             }
         }
         if (library.stories.isNotEmpty() && density == Density.Moments) {
-            StoriesRow(library.stories, seenStories, onOpenStory)
+            // "Hace un mes" lives in Recuerdos; the home row keeps the anniversaries and surprises.
+            StoriesRow(library.stories, seenStories, onOpenStory, exclude = HOME_HIDDEN_STORIES)
+        }
+    }
+}
+
+/** The home screen's heartbeat: a memory that slowly drifts and changes by itself. */
+@Composable
+private fun LivingCover(story: Story, alive: Boolean, onClick: () -> Unit) {
+    var index by remember(story.id) { mutableIntStateOf(0) }
+    val drift = remember { Animatable(0f) }
+    LaunchedEffect(story.id, alive) {
+        while (alive && isActive) {
+            drift.snapTo(0f)
+            drift.animateTo(1f, tween(6000, easing = LinearEasing))
+            index = (index + 1) % story.items.size
+        }
+    }
+    Box(
+        Modifier
+            .padding(horizontal = 16.dp)
+            .fillMaxWidth()
+            .aspectRatio(1.3f)
+            .bounceClick(pressedScale = 0.98f, onClick = onClick)
+            .clip(CardShape)
+            .background(Darkroom.Raised)
+    ) {
+        Crossfade(story.items[index.coerceAtMost(story.items.lastIndex)], animationSpec = tween(700), label = "cover") { item ->
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val s = 1.04f + 0.09f * drift.value
+                        scaleX = s
+                        scaleY = s
+                        translationX = (drift.value - 0.5f) * 18.dp.toPx()
+                    }
+            ) {
+                ThumbImage(item, 0, Modifier.fillMaxSize())
+                ThumbImage(item, 1280, Modifier.fillMaxSize())
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.5f to Color.Transparent,
+                        1f to Color(0xD9000000)
+                    )
+                )
+        )
+        Column(
+            Modifier
+                .align(Alignment.BottomStart)
+                .padding(16.dp)
+        ) {
+            Text(story.title, style = MaterialTheme.typography.headlineMedium, color = Color.White, maxLines = 1)
+            Text(story.dateLabel(), style = MaterialTheme.typography.labelMedium, color = Darkroom.Accent, maxLines = 1)
+        }
+    }
+}
+
+/* ---- Places ---- */
+
+@Composable
+private fun PlacesRow(places: List<Album>, onOpen: (Album) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Tus lugares", style = MaterialTheme.typography.titleLarge, color = Darkroom.Ink, modifier = Modifier.padding(horizontal = 16.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(places, key = { it.id }) { place ->
+                Box(
+                    Modifier
+                        .size(136.dp, 96.dp)
+                        .bounceClick(pressedScale = 0.95f) { onOpen(place) }
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Darkroom.Raised)
+                ) {
+                    ThumbImage(place.items.first(), 0, Modifier.fillMaxSize())
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Brush.verticalGradient(0.3f to Color.Transparent, 1f to Color(0xE6000000)))
+                    )
+                    Column(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                    ) {
+                        Text(place.name, style = MaterialTheme.typography.titleSmall, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${place.items.size}", style = MaterialTheme.typography.labelSmall, color = Darkroom.Accent)
+                    }
+                }
+            }
         }
     }
 }
@@ -141,6 +257,7 @@ fun HomeHero(
 fun AlbumsScreen(
     library: Library,
     onOpenAlbum: (Album) -> Unit,
+    onOpenPlace: (Album) -> Unit,
     onOpenFavorites: () -> Unit,
     onOpenVideos: () -> Unit,
     onOpenHidden: () -> Unit,
@@ -166,6 +283,16 @@ fun AlbumsScreen(
                 ShortcutTile(Icons.Rounded.Favorite, "Favoritas", library.favorites.size, Modifier.weight(1f), onOpenFavorites)
                 ShortcutTile(Icons.Rounded.Videocam, "Vídeos", library.videos.size, Modifier.weight(1f), onOpenVideos)
                 ShortcutTile(Icons.Rounded.Lock, "Oculto", null, Modifier.weight(1f), onOpenHidden)
+            }
+        }
+        if (library.places.isNotEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }, contentType = "places") {
+                // Bleeds to the edges inside the grid's side padding.
+                Box(Modifier.padding(horizontal = 0.dp).layout { measurable, constraints ->
+                    val extra = 32.dp.roundToPx()
+                    val p = measurable.measure(constraints.copy(maxWidth = constraints.maxWidth + extra, minWidth = constraints.maxWidth + extra))
+                    layout(constraints.maxWidth, p.height) { p.place(-extra / 2, 0) }
+                }) { PlacesRow(library.places, onOpenPlace) }
             }
         }
         items(library.albums, key = { it.id }, contentType = { "album" }) { album ->
@@ -294,9 +421,19 @@ fun MemoriesScreen(
     seenStories: Set<String>,
     onOpenStory: (Int) -> Unit,
     onOpenYear: (YearStat) -> Unit,
+    onOpenPlace: (Album) -> Unit,
+    alive: Boolean,
     modifier: Modifier = Modifier
 ) {
     val maxPerYear = remember(library.years) { library.years.maxOfOrNull { it.items.size }?.coerceAtLeast(1) ?: 1 }
+    // The big cover is for anniversaries, never for "Hace un mes": that one stays a normal card.
+    val coverIndex = remember(library.stories) {
+        library.stories.indexOfFirst { it.id != "ago-1" && !it.id.startsWith("month-") }
+            .takeIf { it >= 0 }
+    }
+    val rowStories = remember(library.stories, coverIndex) {
+        library.stories.indices.filter { it != coverIndex }
+    }
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -314,13 +451,19 @@ fun MemoriesScreen(
                 Text("TU VIDA EN FOTOS", style = MaterialTheme.typography.labelMedium, color = Darkroom.Muted)
             }
         }
-        if (library.stories.isNotEmpty()) {
+        // The big cover is for anniversaries, never for "Hace un mes": that one stays a normal card.
+        if (coverIndex != null) {
+            item(contentType = "cover") {
+                LivingCover(library.stories[coverIndex], alive) { onOpenStory(coverIndex) }
+            }
+        }
+        if (rowStories.isNotEmpty()) {
             item(contentType = "stories") {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(library.stories.size, key = { library.stories[it].id }) { i ->
+                    items(rowStories, key = { library.stories[it].id }) { i ->
                         val story = library.stories[i]
                         Box(
                             Modifier
@@ -334,20 +477,23 @@ fun MemoriesScreen(
                                 Modifier
                                     .fillMaxSize()
                                     .background(
-                                        androidx.compose.ui.graphics.Brush.verticalGradient(
-                                            0.5f to androidx.compose.ui.graphics.Color.Transparent,
-                                            1f to androidx.compose.ui.graphics.Color(0xD9000000)
+                                        Brush.verticalGradient(
+                                            0.5f to Color.Transparent,
+                                            1f to Color(0xD9000000)
                                         )
                                     )
                             )
                             Column(Modifier.align(Alignment.BottomStart).padding(12.dp)) {
-                                Text(story.title, style = MaterialTheme.typography.titleMedium, color = androidx.compose.ui.graphics.Color.White, maxLines = 1)
+                                Text(story.title, style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 1)
                                 Text(story.dateLabel(), style = MaterialTheme.typography.labelSmall, color = Darkroom.Accent, maxLines = 1)
                             }
                         }
                     }
                 }
             }
+        }
+        if (library.places.isNotEmpty()) {
+            item(contentType = "places") { PlacesRow(library.places, onOpenPlace) }
         }
         library.busiestDay?.let { day ->
             item(contentType = "stat") {
@@ -473,12 +619,11 @@ fun CollectionScreen(
 
 /* ---- Search ---- */
 
-private val SEARCH_IDEAS = listOf("favorito", "video", "captura", "verano")
-
 @Composable
 fun SearchScreen(
     query: String,
     onQuery: (String) -> Unit,
+    ideas: List<String>,
     results: List<MediaItem>,
     state: TimelineState,
     selected: Set<String>,
@@ -510,7 +655,7 @@ fun SearchScreen(
             Icon(Icons.Rounded.Search, null, tint = Darkroom.Muted, modifier = Modifier.size(22.dp))
             Box(Modifier.weight(1f)) {
                 if (query.isEmpty()) {
-                    Text("Marzo 2023, Camera, vídeo…", style = MaterialTheme.typography.bodyLarge, color = Darkroom.Muted, maxLines = 1)
+                    Text("Madrid, marzo 2026, vídeo…", style = MaterialTheme.typography.bodyLarge, color = Darkroom.Muted, maxLines = 1)
                 }
                 BasicTextField(
                     value = query,
@@ -535,11 +680,11 @@ fun SearchScreen(
         when {
             query.isBlank() -> Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Prueba con", style = MaterialTheme.typography.titleMedium, color = Darkroom.Ink)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SEARCH_IDEAS.take(3).forEach { ChoiceChip(it, false, { onQuery(it) }) }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(ideas, key = { it }) { ChoiceChip(it, false, { onQuery(it) }) }
                 }
                 Text(
-                    "Busca por mes, año, álbum, nombre de archivo o tipo. Todo se queda en tu móvil.",
+                    "Busca por lugar, mes, año, álbum, nombre de archivo o tipo.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Darkroom.Muted
                 )
@@ -579,7 +724,7 @@ fun PermissionScreen(denied: Boolean, onGrant: () -> Unit, onOpenSettings: () ->
         )
         Text(
             if (denied) "Para mostrarte la galería, activa el acceso a fotos y vídeos en los ajustes del móvil."
-            else "Necesitamos acceso a tus fotos y vídeos para mostrarlos. Nada sale de tu móvil.",
+            else "Necesitamos acceso a tus fotos y vídeos para mostrarlos. Tus fotos no salen de tu móvil.",
             style = MaterialTheme.typography.bodyMedium,
             color = Darkroom.Muted
         )

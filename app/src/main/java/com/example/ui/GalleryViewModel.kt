@@ -5,7 +5,9 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.GalleryApplication
+import com.example.data.GalleryDatabase
 import com.example.data.Library
+import com.example.data.PlaceIndexer
 import com.example.data.MediaItem
 import com.example.data.MediaSearch
 import com.example.data.Thumbnails
@@ -35,6 +37,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     val library: StateFlow<Library> = repository.library()
         .stateIn(viewModelScope, SharingStarted.Eagerly, Library.EMPTY)
+
+    private val placeTrigger = MutableStateFlow(0)
 
     private val _density = MutableStateFlow(
         runCatching { Density.valueOf(prefs.getString("density", null) ?: "") }.getOrDefault(Density.Moments)
@@ -66,9 +70,29 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 .distinctUntilChanged { a, b -> a.size == b.size && a.firstOrNull()?.id == b.firstOrNull()?.id }
                 .collectLatest { Thumbnails.preload(app, it) }
         }
+        viewModelScope.launch {
+            combine(
+                library.filter { it.complete }.map { it.timeline + it.hidden }
+                    .distinctUntilChanged { a, b -> a.size == b.size && a.firstOrNull()?.id == b.firstOrNull()?.id },
+                placeTrigger
+            ) { items, _ -> items }
+                .collectLatest { items ->
+                    runCatching {
+                        PlaceIndexer(app, GalleryDatabase.getDatabase(app)).index(items)
+                    }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                }
+        }
     }
 
     fun onPermissionChanged() = repository.refresh()
+
+    /** The system dialog for photo locations is shown once; afterwards it is the user's call in settings. */
+    fun shouldAskPhotoLocation(): Boolean = !prefs.getBoolean("asked_photo_location", false)
+
+    fun onPhotoLocationAnswered() {
+        prefs.edit().putBoolean("asked_photo_location", true).apply()
+        placeTrigger.value += 1
+    }
 
     fun setDensity(density: Density) {
         _density.value = density

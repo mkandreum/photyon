@@ -7,9 +7,10 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [MediaOverride::class], version = 2, exportSchema = false)
+@Database(entities = [MediaOverride::class, MediaPlace::class], version = 3, exportSchema = false)
 abstract class GalleryDatabase : RoomDatabase() {
     abstract fun mediaOverrideDao(): MediaOverrideDao
+    abstract fun mediaPlaceDao(): MediaPlaceDao
 
     companion object {
         @Volatile
@@ -30,6 +31,12 @@ abstract class GalleryDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS media_places (mediaId TEXT NOT NULL PRIMARY KEY, cell TEXT, place TEXT)")
+            }
+        }
+
         fun getDatabase(context: Context): GalleryDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -37,7 +44,7 @@ abstract class GalleryDatabase : RoomDatabase() {
                     GalleryDatabase::class.java,
                     "gallery_database"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -21,10 +21,13 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
 import androidx.media3.effect.HslAdjustment
+import androidx.media3.effect.Presentation
+import androidx.media3.effect.RgbMatrix
 import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
@@ -56,11 +59,9 @@ object EditorStore {
             decoder.isMutableRequired = false
             val w = info.size.width
             val h = info.size.height
-            val longest = maxOf(w, h)
-            if (longest > maxSide) {
-                val scale = maxSide.toFloat() / longest
-                decoder.setTargetSize((w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
-            }
+            // Sampling skips most of the decode work, unlike an exact target size.
+            val sample = Integer.highestOneBit((maxOf(w, h) / maxSide).coerceAtLeast(1))
+            if (sample > 1) decoder.setTargetSampleSize(sample)
         }
     }
 
@@ -142,84 +143,46 @@ object EditorStore {
         val quarterTurns: Int,
         val brightness: Float,
         val contrast: Float,
-        val saturation: Float
+        val saturation: Float,
+        val filter: PhotoFilter = PhotoFilter.Original
     )
 
     /** Color effects shared by the live preview and the export, so what is seen is what is saved. */
     @OptIn(UnstableApi::class)
-    fun colorEffects(brightness: Float, contrast: Float, saturation: Float): List<Effect> = buildList {
+    fun colorEffects(brightness: Float, contrast: Float, saturation: Float, filter: PhotoFilter = PhotoFilter.Original): List<Effect> = buildList {
+        if (filter != PhotoFilter.Original) {
+            val m = filter.matrix()
+            // Media3's matrix has no offsets (and reads column by column), so they become a brightness shift.
+            val rgb = floatArrayOf(
+                m[0], m[5], m[10], 0f,
+                m[1], m[6], m[11], 0f,
+                m[2], m[7], m[12], 0f,
+                0f, 0f, 0f, 1f
+            )
+            add(RgbMatrix { _, _ -> rgb })
+            val lift = (m[4] + m[9] + m[14]) / 3f / 255f
+            if (lift != 0f) add(Brightness(lift.coerceIn(-1f, 1f)))
+        }
         if (brightness != 0f) add(Brightness(brightness.coerceIn(-1f, 1f)))
         if (contrast != 1f) add(Contrast((contrast - 1f).coerceIn(-1f, 1f)))
         if (saturation != 1f) add(HslAdjustment.Builder().adjustSaturation((saturation - 1f) * 100f).build())
     }
 
-    /** Must run on the main thread: Transformer is bound to the looper it is built on. */
+    /**
+     * Must run on the main thread: Transformer is bound to the looper it is built on. Keeps the source's quality when
+     * the device can; 4K HDR encoders often refuse to start, so a failure retries once at 1080p SDR.
+     */
     @OptIn(UnstableApi::class)
     suspend fun exportVideo(ctx: Context, item: MediaItem, edit: VideoEdit, onProgress: (Float) -> Unit): Uri {
         val temp = File(ctx.cacheDir, "edit_${System.nanoTime()}.mp4")
         try {
-            val clip = ExoMediaItem.Builder()
-                .setUri(item.uri)
-                .setClippingConfiguration(
-                    ExoMediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(edit.startMs)
-                        .setEndPositionMs(edit.endMs)
-                        .build()
-                )
-                .build()
-            val video = buildList<Effect> {
-                addAll(colorEffects(edit.brightness, edit.contrast, edit.saturation))
-                if (edit.quarterTurns % 4 != 0) {
-                    // Media3 rotates counter-clockwise; the editor turns clockwise.
-                    add(ScaleAndRotateTransformation.Builder().setRotationDegrees(-90f * edit.quarterTurns).build())
-                }
-                if (edit.speed != 1f) add(SpeedChangeEffect(edit.speed))
-            }
-            val audio = if (edit.speed != 1f && !edit.muted) {
-                listOf(SonicAudioProcessor().apply { setSpeed(edit.speed) })
-            } else emptyList()
-            val edited = EditedMediaItem.Builder(clip)
-                .setRemoveAudio(edit.muted)
-                .setEffects(Effects(audio, video))
-                .build()
-
-            coroutineScope {
-                val transformer = CompletableDeferred<Transformer>()
-                val poll = launch {
-                    val running = transformer.await()
-                    val holder = ProgressHolder()
-                    while (isActive) {
-                        if (running.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) {
-                            onProgress(holder.progress / 100f)
-                        }
-                        delay(200)
-                    }
-                }
-                try {
-                    suspendCancellableCoroutine { cont ->
-                        val built = Transformer.Builder(ctx)
-                            .setVideoMimeType(MimeTypes.VIDEO_H264)
-                            .addListener(object : Transformer.Listener {
-                                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                                    if (cont.isActive) cont.resume(Unit)
-                                }
-
-                                override fun onError(
-                                    composition: Composition,
-                                    exportResult: ExportResult,
-                                    exportException: ExportException
-                                ) {
-                                    if (cont.isActive) cont.resumeWithException(exportException)
-                                }
-                            })
-                            .build()
-                        built.start(edited, temp.path)
-                        transformer.complete(built)
-                        cont.invokeOnCancellation { built.cancel() }
-                    }
-                } finally {
-                    poll.cancel()
-                }
+            try {
+                transform(ctx, item, edit, temp, downscale = false, onProgress)
+            } catch (e: ExportException) {
+                android.util.Log.w("VideoEditor", "export at full quality failed, retrying at 1080p", e)
+                temp.delete()
+                onProgress(0f)
+                transform(ctx, item, edit, temp, downscale = true, onProgress)
             }
             return withContext(Dispatchers.IO) {
                 insert(ctx, item, video = true) { out -> temp.inputStream().use { it.copyTo(out) } }
@@ -229,4 +192,90 @@ object EditorStore {
         }
     }
 
+    @OptIn(UnstableApi::class)
+    private suspend fun transform(
+        ctx: Context,
+        item: MediaItem,
+        edit: VideoEdit,
+        out: File,
+        downscale: Boolean,
+        onProgress: (Float) -> Unit
+    ) {
+        val clip = ExoMediaItem.Builder()
+            .setUri(item.uri)
+            .setClippingConfiguration(
+                ExoMediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(edit.startMs)
+                    .setEndPositionMs(edit.endMs)
+                    .build()
+            )
+            .build()
+        val video = buildList<Effect> {
+            addAll(colorEffects(edit.brightness, edit.contrast, edit.saturation, edit.filter))
+            if (edit.quarterTurns % 4 != 0) {
+                // Media3 rotates counter-clockwise; the editor turns clockwise.
+                add(ScaleAndRotateTransformation.Builder().setRotationDegrees(-90f * edit.quarterTurns).build())
+            }
+            if (edit.speed != 1f) add(SpeedChangeEffect(edit.speed))
+            if (downscale) {
+                val landscape = (item.aspect > 1f) != (edit.quarterTurns % 2 != 0)
+                add(
+                    Presentation.createForWidthAndHeight(
+                        if (landscape) 1920 else 1080,
+                        if (landscape) 1080 else 1920,
+                        Presentation.LAYOUT_SCALE_TO_FIT
+                    )
+                )
+            }
+        }
+        val audio = if (edit.speed != 1f && !edit.muted) {
+            listOf(SonicAudioProcessor().apply { setSpeed(edit.speed) })
+        } else emptyList()
+        val edited = EditedMediaItem.Builder(clip)
+            .setRemoveAudio(edit.muted)
+            .setEffects(Effects(audio, video))
+            .build()
+        val composition = Composition.Builder(EditedMediaItemSequence.Builder(listOf(edited)).build())
+            .apply { if (downscale) setHdrMode(Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL) }
+            .build()
+
+        coroutineScope {
+            val transformer = CompletableDeferred<Transformer>()
+            val poll = launch {
+                val running = transformer.await()
+                val holder = ProgressHolder()
+                while (isActive) {
+                    if (running.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                        onProgress(holder.progress / 100f)
+                    }
+                    delay(200)
+                }
+            }
+            try {
+                suspendCancellableCoroutine { cont ->
+                    val built = Transformer.Builder(ctx)
+                        .apply { if (downscale) setVideoMimeType(MimeTypes.VIDEO_H264) }
+                        .addListener(object : Transformer.Listener {
+                            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                                if (cont.isActive) cont.resume(Unit)
+                            }
+
+                            override fun onError(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                                exportException: ExportException
+                            ) {
+                                if (cont.isActive) cont.resumeWithException(exportException)
+                            }
+                        })
+                        .build()
+                    built.start(composition, out.path)
+                    transformer.complete(built)
+                    cont.invokeOnCancellation { built.cancel() }
+                }
+            } finally {
+                poll.cancel()
+            }
+        }
+    }
 }

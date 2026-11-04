@@ -128,7 +128,13 @@ object Mosaic {
                 anchors.add(TimeAnchor(rows.size, MONTHS_ES[date.monthValue - 1].take(3).uppercase(), date.year))
                 lastMonth = monthKey
             }
-            rows.add(headerFor(density, date, group.size))
+            rows.add(
+                headerFor(
+                    density, date, group.size,
+                    group.count { it.first.dateEstimated } * 2 > group.size,
+                    group.firstNotNullOfOrNull { it.first.place }
+                )
+            )
             val photos = group.map { it.first }
             var at = 0
             var previous: RowLayout? = null
@@ -148,14 +154,17 @@ object Mosaic {
         return TimelineRows(rows, items, rowOfItem, positionOfItem, anchors)
     }
 
-    private fun headerFor(density: Density, date: LocalDate, count: Int): TimelineRow.Header {
+    private fun headerFor(density: Density, date: LocalDate, count: Int, estimated: Boolean, place: String?): TimelineRow.Header {
         val noun = if (count == 1) "elemento" else "elementos"
         return when (density) {
             Density.Moments -> TimelineRow.Header(
                 key = "h:${date.toEpochDay()}",
                 numeral = date.dayOfMonth.toString(),
                 title = "${MONTHS_ES[date.monthValue - 1]} ${date.year}",
-                subtitle = "${date.dayOfWeek.getDisplayName(TextStyle.FULL, SPANISH)} · $count".uppercase(),
+                subtitle = (
+                    if (estimated) "fecha aproximada · $count"
+                    else listOfNotNull(date.dayOfWeek.getDisplayName(TextStyle.FULL, SPANISH), "$count", place).joinToString(" · ")
+                    ).uppercase(),
                 big = true
             )
             Density.Months -> TimelineRow.Header(
@@ -173,6 +182,14 @@ object Mosaic {
                 big = true
             )
         }
+    }
+
+    /** Text of the floating pill that says where in time the list is. */
+    fun pillLabel(item: MediaItem, zone: ZoneId = ZoneId.systemDefault()): String {
+        if (item.dateEstimated) return "SIN FECHA EXACTA"
+        val d = Instant.ofEpochMilli(item.dateTakenMs).atZone(zone).toLocalDate()
+        val date = "${d.dayOfMonth} ${MONTHS_ES[d.monthValue - 1].take(3).uppercase()} ${d.year}"
+        return if (item.place != null) "$date · ${item.place.uppercase()}" else date
     }
 
     /** The catalog is already sorted by date, so consecutive grouping is linear and keeps the order. */

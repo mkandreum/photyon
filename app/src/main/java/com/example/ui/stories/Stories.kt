@@ -55,12 +55,15 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import coil.size.Precision
 import coil.size.Size
 import com.example.data.MediaItem
 import com.example.data.Story
@@ -81,15 +84,39 @@ import kotlin.math.abs
 private const val SLIDE_MS = 5000
 private val storyDate = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.forLanguageTag("es-ES"))
 
+/** Stories need the real photo, not the grid thumbnail: the Ken Burns drift would blur it further. */
+private const val STORY_PX = 2560
+
+private fun storyRequest(context: android.content.Context, item: MediaItem): ImageRequest =
+    ImageRequest.Builder(context)
+        // Coil cannot decode video, so those keep the largest frame the system can render.
+        .data(if (item.isVideo) Thumb(item, STORY_PX) else item.uri)
+        .apply {
+            if (item.isVideo) size(Size.ORIGINAL) else size(STORY_PX)
+        }
+        .precision(Precision.INEXACT)
+        // The disk thumbnail paints immediately while the full image decodes.
+        .placeholderMemoryCacheKey(Thumb(item).cacheKey)
+        .crossfade(180)
+        .build()
+
 /** Row of portrait story cards with their dates; a lit frame means not watched yet today. */
 @Composable
-fun StoriesRow(stories: List<Story>, seen: Set<String>, onOpen: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun StoriesRow(
+    stories: List<Story>,
+    seen: Set<String>,
+    onOpen: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    exclude: Set<String> = emptySet()
+) {
+    // The indices stay tied to the full story list: StoryPlayer always receives every story.
+    val visible = remember(stories, exclude) { stories.indices.filter { stories[it].id !in exclude } }
     LazyRow(
         modifier = modifier,
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(stories.size, key = { stories[it].id }) { index ->
+        items(visible, key = { stories[it].id }) { index ->
             val story = stories[index]
             val unseen = story.id !in seen
             val date = remember(story) { story.dateLabel() }
@@ -211,9 +238,7 @@ fun StoryPlayer(
     LaunchedEffect(storyIndex, slide) {
         val upcoming = story.items.getOrNull(slide + 1) ?: stories.getOrNull(storyIndex + 1)?.items?.firstOrNull()
         if (upcoming != null) {
-            context.imageLoader.enqueue(
-                ImageRequest.Builder(context).data(Thumb(upcoming, 1280)).size(Size.ORIGINAL).build()
-            )
+            context.imageLoader.enqueue(storyRequest(context, upcoming))
         }
     }
 
@@ -291,7 +316,14 @@ fun StoryPlayer(
                     }
             ) {
                 ThumbImage(shown, 0, Modifier.fillMaxSize())
-                ThumbImage(shown, 1280, Modifier.fillMaxSize())
+                val context = LocalContext.current
+                val request = remember(shown.id, shown.dateModifiedSec) { storyRequest(context, shown) }
+                AsyncImage(
+                    model = request,
+                    contentDescription = shown.displayName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
         // Keeps text readable over any photo.
@@ -353,7 +385,8 @@ fun StoryPlayer(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                Instant.ofEpochMilli(item.dateTakenMs).atZone(ZoneId.systemDefault()).format(storyDate),
+                if (item.dateEstimated) "Sin fecha exacta"
+                else Instant.ofEpochMilli(item.dateTakenMs).atZone(ZoneId.systemDefault()).format(storyDate),
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 modifier = Modifier.weight(1f)

@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.data.Library
+import com.example.data.MediaDates
 import com.example.data.MediaItem
 import com.example.data.MediaOverride
 import com.example.data.MediaSearch
@@ -9,6 +10,7 @@ import com.example.data.dateLabel
 import com.example.ui.editor.ColorMath
 import com.example.ui.editor.CropRect
 import com.example.ui.editor.EditValues
+import com.example.ui.editor.PhotoFilter
 import com.example.ui.timeline.Density
 import com.example.ui.timeline.Mosaic
 import com.example.ui.timeline.TimelineRow
@@ -82,7 +84,7 @@ class MosaicTest {
 
     @Test
     fun `memories find this week in earlier years only`() {
-        val items = listOf(photo(1, "2024-03-14"), photo(2, "2024-03-20"), photo(3, "2026-03-14"), photo(4, "2022-03-12"))
+        val items = listOf(photo(1, "2024-03-14"), photo(2, "2024-03-30"), photo(3, "2026-03-14"), photo(4, "2022-03-12"))
         val memories = Library.memoriesOf(items, LocalDate.parse("2026-03-14"), zone)
         assertEquals(listOf(2, 4), memories.map { it.yearsAgo })
         assertEquals(listOf("1"), memories.first().items.map { it.id })
@@ -101,13 +103,13 @@ class MosaicTest {
     fun `stories use memories first and cap their slides`() {
         val visible = (0 until 40).map { photo(it, "2024-03-14") }
         val memories = Library.memoriesOf(visible, LocalDate.parse("2026-03-14"), zone)
-        val stories = Library.storiesOf(memories, visible.take(3), visible, LocalDate.parse("2026-03-14"))
-        assertEquals(listOf("memory-2", "surprise", "favorites"), stories.map { it.id })
+        val stories = Library.storiesOf(memories, visible.take(3), visible, LocalDate.parse("2026-03-14"), zone)
+        assertEquals(listOf("memory-2", "big-day", "surprise", "favorites", "month-${2024 * 12 + 2}"), stories.map { it.id })
         assertEquals(12, stories.first().items.size)
-        assertEquals(3, stories.last().items.size)
+        assertEquals(3, stories.first { it.id == "favorites" }.items.size)
         // The surprise is stable for the whole day.
-        val again = Library.storiesOf(memories, emptyList(), visible, LocalDate.parse("2026-03-14"))
-        assertEquals(stories[1].items, again[1].items)
+        val again = Library.storiesOf(memories, emptyList(), visible, LocalDate.parse("2026-03-14"), zone)
+        assertEquals(stories[2].items, again[2].items)
     }
 
     @Test
@@ -117,6 +119,74 @@ class MosaicTest {
         assertEquals("2-6 NOV 2024", label("2024-11-06", "2024-11-02"))
         assertEquals("MAR-NOV 2024", label("2024-03-01", "2024-11-02"))
         assertEquals("2019-2024", label("2019-03-01", "2024-11-02"))
+    }
+
+    @Test
+    fun `undated photos stay out of date stories and go to the archive`() {
+        val undated = (0 until 20).map { photo(it, "2025-11-04").copy(dateEstimated = true) }
+        val recent = (100 until 105).map { photo(it, "2026-10-04") }
+        val today = LocalDate.parse("2026-11-04")
+        val memories = Library.memoriesOf(undated + recent, today, zone)
+        assertTrue(memories.isEmpty())
+        val stories = Library.storiesOf(memories, emptyList(), undated + recent, today, zone)
+        val ids = stories.map { it.id }
+        assertTrue(ids.toString(), "ago-1" in ids && "archive" in ids && "surprise" in ids && "month-${2026 * 12 + 9}" in ids)
+        assertEquals("SIN FECHA EXACTA", stories.first { it.id == "archive" }.dateLabel(zone))
+        assertEquals(ids.size, ids.toSet().size)
+        val lib = Library.build(undated + recent, emptyMap(), true, today, zone)
+        assertEquals(LocalDate.parse("2026-10-04"), lib.busiestDay?.date)
+    }
+
+    @Test
+    fun `places feed search and stories but home is not a story`() {
+        val items = (0 until 30).map { photo(it, "2026-06-${(it % 20 + 1).toString().padStart(2, '0')}") }.sortedByDescending { it.dateTakenMs }
+        val names = items.associate { it.id to if (it.id.toInt() < 22) "Madrid" else "Cádiz" }
+        val lib = Library.build(items, emptyMap(), true, LocalDate.parse("2026-11-04"), zone, names)
+        assertEquals(listOf("Madrid", "Cádiz"), lib.places.map { it.name })
+        assertTrue("place-Cádiz" in lib.stories.map { it.id })
+        assertTrue("place-Madrid" !in lib.stories.map { it.id })
+        assertEquals(8, MediaSearch.filter(lib.timeline, "cadiz", zone).size)
+    }
+
+    @Test
+    fun `screenshots never appear in stories`() {
+        val shots = (0 until 30).map { photo(it, "2026-10-04").copy(bucketName = "Screenshots") }
+        val today = LocalDate.parse("2026-11-04")
+        assertTrue(Library.storiesOf(emptyList(), emptyList(), shots, today, zone).isEmpty())
+        assertTrue(Library.memoriesOf(shots, LocalDate.parse("2027-10-04"), zone).isEmpty())
+    }
+
+    @Test
+    fun `film stocks behave like their reputation`() {
+        fun saturationOf(f: PhotoFilter): Float {
+            val m = ColorMath.of(EditValues(filter = f))
+            val r = m[0] * 200f + m[1] * 100f + m[2] * 100f + m[4]
+            val g = m[5] * 200f + m[6] * 100f + m[7] * 100f + m[9]
+            val b = m[10] * 200f + m[11] * 100f + m[12] * 100f + m[14]
+            return maxOf(r, g, b) - minOf(r, g, b)
+        }
+        val plain = saturationOf(PhotoFilter.Original)
+        assertEquals(0f, saturationOf(PhotoFilter.Acros), 0.5f)
+        assertTrue(saturationOf(PhotoFilter.Velvia) > plain * 1.3f)
+        assertTrue(saturationOf(PhotoFilter.Ektar) > saturationOf(PhotoFilter.Portra))
+        assertTrue(saturationOf(PhotoFilter.ClassicChrome) < plain)
+        // Published PixiJS matrix: kept verbatim, offsets scaled to 0..255.
+        assertEquals(1.438f, PhotoFilter.Polaroid.matrix()[0], 0.0001f)
+        assertEquals(0.24991995f * 255f, PhotoFilter.Kodachrome.matrix()[4], 0.001f)
+    }
+
+    @Test
+    fun `file names give back lost dates`() {
+        val now = at("2026-11-04")
+        fun day(name: String) = MediaDates.fromFileName(name, now, zone)?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalDate().toString()
+        }
+        assertEquals("2024-03-12", day("IMG-20240312-WA0001.jpg"))
+        assertEquals("2021-07-09", day("Screenshot_2021-07-09-18-22-01.png"))
+        assertEquals("2023-11-14", day("1700000000000.png"))
+        assertEquals(null, day("IMG_1234.JPG"))
+        assertEquals(null, day("IMG-20991231-WA0001.jpg"))
+        assertEquals(null, day("IMG-20240231-WA0001.jpg"))
     }
 
     @Test

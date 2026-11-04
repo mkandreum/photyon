@@ -135,6 +135,7 @@ private sealed interface Source {
     data class AlbumRef(val id: String) : Source
     data class MemoryRef(val yearsAgo: Int) : Source
     data class YearRef(val year: Int) : Source
+    data class PlaceRef(val id: String) : Source
     data class HiddenAlbum(val id: String) : Source
 }
 
@@ -147,6 +148,7 @@ private fun Library.itemsOf(source: Source, search: List<MediaItem>): List<Media
     is Source.AlbumRef -> albums.firstOrNull { it.id == source.id }?.items.orEmpty()
     is Source.MemoryRef -> memories.firstOrNull { it.yearsAgo == source.yearsAgo }?.items.orEmpty()
     is Source.YearRef -> years.firstOrNull { it.year == source.year }?.items.orEmpty()
+    is Source.PlaceRef -> places.firstOrNull { it.id == source.id }?.items.orEmpty()
     is Source.HiddenAlbum -> hiddenAlbums.firstOrNull { it.id == source.id }?.items.orEmpty()
 }
 
@@ -157,6 +159,7 @@ private fun Library.titleOf(source: Source): String = when (source) {
     is Source.AlbumRef -> albums.firstOrNull { it.id == source.id }?.name ?: "Álbum"
     is Source.MemoryRef -> if (source.yearsAgo == 1) "Hace 1 año" else "Hace ${source.yearsAgo} años"
     is Source.YearRef -> source.year.toString()
+    is Source.PlaceRef -> places.firstOrNull { it.id == source.id }?.name ?: "Lugar"
     is Source.HiddenAlbum -> hiddenAlbums.firstOrNull { it.id == source.id }?.name ?: "Oculto"
     else -> ""
 }
@@ -192,6 +195,17 @@ fun AppRoot(viewModel: GalleryViewModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     LaunchedEffect(Unit) { if (access == Access.None) permissionLauncher.launch(MEDIA_PERMISSIONS) }
+
+    // Town names come from each photo's GPS, which Android keeps behind its own permission.
+    val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.onPhotoLocationAnswered()
+    }
+    LaunchedEffect(access) {
+        if (access != Access.None) {
+            if (context.has(Manifest.permission.ACCESS_MEDIA_LOCATION)) viewModel.onPhotoLocationAnswered()
+            else if (viewModel.shouldAskPhotoLocation()) locationLauncher.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        }
+    }
 
     if (access == Access.None) {
         val canAsk = !askedOnce || (context as? Activity)?.shouldShowRequestPermissionRationale(Manifest.permission.READ_MEDIA_IMAGES) == true
@@ -347,6 +361,7 @@ fun AppRoot(viewModel: GalleryViewModel) {
             AlbumsScreen(
                 library = library,
                 onOpenAlbum = { collection = Source.AlbumRef(it.id) },
+                onOpenPlace = { collection = Source.PlaceRef(it.id) },
                 onOpenFavorites = { collection = Source.Favorites },
                 onOpenVideos = { collection = Source.Videos },
                 onOpenHidden = ::openHidden
@@ -357,13 +372,16 @@ fun AppRoot(viewModel: GalleryViewModel) {
                 library = library,
                 seenStories = seenStories,
                 onOpenStory = { storyAt = it },
-                onOpenYear = { collection = Source.YearRef(it.year) }
+                onOpenYear = { collection = Source.YearRef(it.year) },
+                onOpenPlace = { collection = Source.PlaceRef(it.id) },
+                alive = viewer == null && storyAt == null
             )
         }
         Fading(tab == TAB_SEARCH && collection == null) {
             SearchScreen(
                 query = query,
                 onQuery = viewModel::setQuery,
+                ideas = remember(library.places) { library.places.take(4).map { it.name } + listOf("vídeo", "favorito", "captura") },
                 results = results,
                 state = searchState,
                 selected = selected,

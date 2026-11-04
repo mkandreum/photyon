@@ -50,7 +50,7 @@ object Thumbnails {
     val progress: StateFlow<Progress?> = _progress.asStateFlow()
 
     /** Below-normal priority threads: the preload must never compete with the tiles on screen. */
-    private val preloadDispatcher = Executors.newFixedThreadPool(2) { task ->
+    internal val preloadDispatcher = Executors.newFixedThreadPool(2) { task ->
         Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             task.run()
@@ -137,6 +137,12 @@ object Thumbnails {
     private suspend fun prune(ctx: Context, items: List<MediaItem>) = withContext(Dispatchers.IO) {
         val wanted = items.mapTo(HashSet(items.size * 2)) { fileName(it) }
         dir(ctx).listFiles()?.forEach { if (it.name !in wanted) it.delete() }
+    }
+
+    /** The disk thumbnail as an editable bitmap, if it already exists. */
+    fun smallBitmap(ctx: Context, item: MediaItem): Bitmap? {
+        val file = File(dir(ctx), fileName(item))
+        return if (file.length() > 0) BitmapFactory.decodeFile(file.path) else null
     }
 
     /** Average color of the photo, for the viewer's ambient backdrop. Null until its thumbnail exists. */

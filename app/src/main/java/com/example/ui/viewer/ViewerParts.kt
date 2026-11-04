@@ -38,6 +38,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -53,6 +54,7 @@ import com.example.ui.theme.Darkroom
 import com.example.ui.timeline.ThumbImage
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -69,6 +71,7 @@ private val CELL_GAP = 3.dp
 @Composable
 internal fun FilmStrip(items: List<MediaItem>, pager: PagerState, enabled: Boolean) {
     val strip = rememberLazyListState(initialFirstVisibleItemIndex = pager.currentPage)
+    val scope = rememberCoroutineScope()
     val dragged by strip.interactionSource.collectIsDraggedAsState()
     val fling = rememberSnapFlingBehavior(strip, SnapPosition.Center)
 
@@ -135,7 +138,10 @@ internal fun FilmStrip(items: List<MediaItem>, pager: PagerState, enabled: Boole
                             clip = true
                         }
                         .background(Darkroom.Raised)
-                        .clickable(enabled = enabled) { userDriving = false }
+                        .clickable(enabled = enabled) {
+                            userDriving = false
+                            scope.launch { pager.animateScrollToPage(index) }
+                        }
                 ) {
                     ThumbImage(item, 0, Modifier.fillMaxHeight())
                 }
@@ -195,6 +201,8 @@ internal fun DetailsPanel(
                 val mp = item.width * item.height / 1_000_000f
                 Fact(if (item.isVideo) "${item.width} × ${item.height}" else "%.1f MP · %d × %d".format(Locale.US, mp, item.width, item.height))
             }
+            if (item.dateEstimated) Fact("FECHA APROXIMADA")
+            item.place?.let { Fact(it) }
             Fact(humanSize(item.sizeBytes))
             if (item.isVideo) Fact(item.durationLabel)
             if (item.bucketName.isNotBlank()) Fact(item.bucketName)

@@ -1,6 +1,12 @@
 package com.example.ui.timeline
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -31,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -60,7 +68,9 @@ import coil.request.ImageRequest
 import coil.size.Size
 import com.example.data.MediaItem
 import com.example.data.Thumb
+import com.example.ui.components.PillShape
 import com.example.ui.components.SelectionDot
+import com.example.ui.components.floatingShadow
 import com.example.ui.components.rememberHaptics
 import com.example.ui.theme.DayNumeralStyle
 import com.example.ui.theme.Darkroom
@@ -284,6 +294,13 @@ fun Timeline(
                         dense = density == Density.Years,
                         selectionMode = selectionMode,
                         selected = selected,
+                        parallax = {
+                            // -1 at the bottom of the screen, 1 at the top.
+                            val info = state.list.layoutInfo
+                            val me = info.visibleItemsInfo.firstOrNull { it.index == index + TimelineState.HEADER_ITEMS }
+                            if (me == null || info.viewportSize.height == 0) 0f
+                            else (1f - (me.offset + me.size / 2f) / info.viewportSize.height * 2f).coerceIn(-1f, 1f)
+                        },
                         onTap = { item ->
                             if (selectionMode) {
                                 haptics.tick()
@@ -295,6 +312,49 @@ fun Timeline(
             }
         }
         TimeDial(state = state, modifier = Modifier.align(Alignment.CenterEnd))
+        DatePill(state, Modifier.align(Alignment.TopCenter))
+    }
+}
+
+/** While scrolling, a pill floats at the top saying which day and place you are passing through. */
+@Composable
+private fun DatePill(state: TimelineState, modifier: Modifier = Modifier) {
+    val scrolling by remember { derivedStateOf { state.list.isScrollInProgress && state.list.firstVisibleItemIndex > 1 } }
+    val item by remember {
+        derivedStateOf {
+            val rows = state.rows.rows
+            var i = (state.list.firstVisibleItemIndex - TimelineState.HEADER_ITEMS).coerceAtLeast(0)
+            while (i < rows.size && rows[i] !is TimelineRow.Photos) i++
+            (rows.getOrNull(i) as? TimelineRow.Photos)?.items?.first()
+        }
+    }
+    var lingering by remember { mutableStateOf(false) }
+    LaunchedEffect(scrolling) {
+        if (scrolling) lingering = true else {
+            delay(700)
+            lingering = false
+        }
+    }
+    val label = item?.let { current -> remember(current.id, current.place) { Mosaic.pillLabel(current) } }
+    AnimatedVisibility(
+        visible = lingering && label != null,
+        enter = fadeIn(tween(140)) + slideInVertically { -it / 2 },
+        exit = fadeOut(tween(220)) + slideOutVertically { -it / 2 },
+        modifier = modifier
+            .statusBarsPadding()
+            .padding(top = 6.dp)
+    ) {
+        Text(
+            label.orEmpty(),
+            style = MaterialTheme.typography.labelMedium,
+            color = Darkroom.OnAccent,
+            maxLines = 1,
+            modifier = Modifier
+                .floatingShadow(PillShape, 10.dp)
+                .clip(PillShape)
+                .background(Darkroom.Accent)
+                .padding(horizontal = 14.dp, vertical = 7.dp)
+        )
     }
 }
 
@@ -331,6 +391,7 @@ private fun PhotoRow(
     dense: Boolean,
     selectionMode: Boolean,
     selected: Set<String>,
+    parallax: () -> Float,
     onTap: (MediaItem) -> Unit
 ) {
     val layout = row.layout
@@ -350,6 +411,7 @@ private fun PhotoRow(
                     compactBadges = dense,
                     selectionMode = selectionMode,
                     isSelected = item.id in selected,
+                    parallax = parallax,
                     onTap = onTap
                 )
             }
@@ -380,6 +442,7 @@ private fun Tile(
     compactBadges: Boolean,
     selectionMode: Boolean,
     isSelected: Boolean,
+    parallax: (() -> Float)?,
     onTap: (MediaItem) -> Unit
 ) {
     Box(
@@ -391,9 +454,21 @@ private fun Tile(
             .clickable(onClickLabel = "Abrir") { onTap(item) }
     ) {
         val inset = if (isSelected) 0.88f else 1f
+        val wide = widthFraction > 0.9f && parallax != null
         val imageModifier = Modifier
             .fillMaxSize()
-            .then(if (isSelected) Modifier.graphicsLayer { scaleX = inset; scaleY = inset } else Modifier)
+            .then(
+                when {
+                    isSelected -> Modifier.graphicsLayer { scaleX = inset; scaleY = inset }
+                    // Full-width photos drift against the scroll, read in the draw phase only.
+                    wide -> Modifier.graphicsLayer {
+                        scaleX = 1.14f
+                        scaleY = 1.14f
+                        translationY = parallax!!() * size.height * 0.1f
+                    }
+                    else -> Modifier
+                }
+            )
         ThumbImage(item, 0, imageModifier)
         // Large mosaic tiles sharpen on top of the small thumbnail as soon as the bigger render arrives.
         if (widthFraction >= 0.5f) ThumbImage(item, if (widthFraction > 0.9f) 1280 else 768, imageModifier)
@@ -436,6 +511,8 @@ fun ThumbImage(item: MediaItem, px: Int, modifier: Modifier = Modifier) {
         ImageRequest.Builder(context)
             .data(Thumb(item, px))
             .size(Size.ORIGINAL)
+            // Only applies when loading from disk: cached tiles still draw on the first frame.
+            .crossfade(if (px == 0) 110 else 180)
             .build()
     }
     AsyncImage(

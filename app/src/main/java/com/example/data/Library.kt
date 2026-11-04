@@ -19,7 +19,8 @@ data class Story(val id: String, val title: String, val subtitle: String, val it
 
 /** When a story's photos were taken: "4 NOV 2024", "2-6 NOV 2024", "MAR-NOV 2024" or "2019-2024". */
 fun Story.dateLabel(zone: ZoneId = ZoneId.systemDefault()): String {
-    val dates = items.map { Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate() }
+    if (items.all { it.dateEstimated }) return "SIN FECHA EXACTA"
+    val dates = items.filter { !it.dateEstimated }.map { Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate() }
     val first = dates.min()
     val last = dates.max()
     fun month(d: LocalDate) = MONTHS_ES[d.monthValue - 1].take(3).uppercase()
@@ -47,6 +48,7 @@ class Library(
     val albums: List<Album>,
     val memories: List<Memory>,
     val hiddenAlbums: List<Album>,
+    val places: List<Album>,
     val stories: List<Story>,
     val years: List<YearStat>,
     val busiestDay: BusiestDay?,
@@ -54,21 +56,25 @@ class Library(
     val complete: Boolean
 ) {
     companion object {
-        val EMPTY = Library(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), null, false)
+        val EMPTY = Library(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), null, false)
 
         fun build(
             media: List<MediaItem>,
             overrides: Map<String, MediaOverride>,
             complete: Boolean,
             today: LocalDate = LocalDate.now(),
-            zone: ZoneId = ZoneId.systemDefault()
+            zone: ZoneId = ZoneId.systemDefault(),
+            places: Map<String, String> = emptyMap()
         ): Library {
             val merged = media.map { item ->
-                val o = overrides[item.id] ?: return@map item
+                val o = overrides[item.id]
+                val place = places[item.id]
+                if (o == null && place == null) return@map item
                 item.copy(
-                    isFavorite = o.isFavorite,
-                    isHidden = o.isHidden,
-                    album = o.customAlbum?.takeIf { it.isNotBlank() }
+                    isFavorite = o?.isFavorite ?: false,
+                    isHidden = o?.isHidden ?: false,
+                    album = o?.customAlbum?.takeIf { it.isNotBlank() },
+                    place = place
                 )
             }
             val visible = merged.filter { !it.isHidden }
@@ -80,16 +86,20 @@ class Library(
             val memories = memoriesOf(visible, today, zone)
             val favorites = visible.filter { it.isFavorite }
             val dates = visible.map { Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate() }
-            val perDay = dates.groupingBy { it }.eachCount()
+            // Import days hold thousands of undated files; they are not "your biggest day".
+            val perDay = visible.indices.filter { !visible[it].dateEstimated }.groupingBy { dates[it] }.eachCount()
             return Library(
                 timeline = visible,
                 favorites = favorites,
                 videos = visible.filter { it.isVideo },
                 hidden = hidden,
+                places = visible.filter { it.place != null }.groupBy { it.place!! }
+                    .map { (name, list) -> Album("place:$name", name, list) }
+                    .sortedByDescending { it.items.size },
                 hiddenAlbums = hidden.groupBy { it.album ?: it.bucketName.ifBlank { "Sin nombre" } }
                     .map { (name, list) -> Album("hidden:$name", name, list) }
                     .sortedByDescending { it.items.first().dateTakenMs },
-                stories = storiesOf(memories, favorites, visible, today),
+                stories = storiesOf(memories, favorites, visible, today, zone),
                 years = visible.indices.groupBy { dates[it].year }
                     .map { (year, rows) -> YearStat(year, rows.map { visible[it] }) }
                     .sortedByDescending { it.year },
@@ -110,12 +120,19 @@ class Library(
             return List(STORY_SLIDES) { items[it * items.size / STORY_SLIDES] }
         }
 
-        /** Memories first, then a daily surprise (same picks all day) and the favorites. */
+        private const val MIN_STORY = 3
+        private val MONTHS_AGO = listOf(1 to "Hace un mes", 3 to "Hace 3 meses", 6 to "Hace 6 meses")
+
+        /**
+         * The whole set of stories: anniversaries first, then recent look-backs, the biggest day, daily random
+         * picks and one per recent month. Only photos with a trustworthy date go into date-based stories.
+         */
         fun storiesOf(
             memories: List<Memory>,
             favorites: List<MediaItem>,
             visible: List<MediaItem>,
-            today: LocalDate
+            today: LocalDate,
+            zone: ZoneId = ZoneId.systemDefault()
         ): List<Story> = buildList {
             memories.forEach { m ->
                 add(
@@ -127,24 +144,83 @@ class Library(
                     )
                 )
             }
-            val photos = visible.filter { !it.isVideo }
-            if (photos.size >= 6) {
-                val picks = photos.shuffled(java.util.Random(today.toEpochDay())).take(STORY_SLIDES).sortedBy { it.dateTakenMs }
-                add(Story("surprise", "Sorpresa", "Elegidas al azar para hoy", picks))
+            val photos = visible.filter { !it.isVideo && !it.isScreenshot }
+            val dated = photos.filter { !it.dateEstimated }
+            val byDay = dated.groupBy { Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate() }
+
+            MONTHS_AGO.forEach { (months, title) ->
+                val center = today.minusMonths(months.toLong())
+                val around = (-3L..3L).flatMap { byDay[center.plusDays(it)].orEmpty() }
+                if (around.size >= MIN_STORY) {
+                    add(Story("ago-$months", title, "Estos días de ${MONTHS_ES[center.monthValue - 1]}", spread(around.sortedBy { it.dateTakenMs })))
+                }
             }
+
+            byDay.maxByOrNull { it.value.size }?.takeIf { it.value.size >= 10 }?.let { (day, list) ->
+                add(
+                    Story(
+                        "big-day",
+                        "Tu gran día",
+                        "${list.size} fotos el ${day.dayOfMonth} de ${MONTHS_ES[day.monthValue - 1]}",
+                        spread(list.sortedBy { it.dateTakenMs })
+                    )
+                )
+            }
+
+            // Places away from "home" (the place with most photos) make the best stories.
+            val byPlace = dated.filter { it.place != null }.groupBy { it.place!! }
+            val home = byPlace.maxByOrNull { it.value.size }?.key
+            byPlace.filterKeys { it != home }.entries
+                .filter { it.value.size >= 5 }
+                .sortedByDescending { it.value.size }
+                .take(6)
+                .forEach { (name, list) ->
+                    add(Story("place-$name", name, "${list.size} fotos aquí", spread(list.sortedBy { it.dateTakenMs })))
+                }
+
+            val random = java.util.Random(today.toEpochDay())
+            if (photos.size >= 6) {
+                add(Story("surprise", "Sorpresa", "Elegidas al azar para hoy", photos.shuffled(random).take(STORY_SLIDES).sortedBy { it.dateTakenMs }))
+            }
+            val undated = photos.filter { it.dateEstimated }
+            if (undated.size >= 6) {
+                add(Story("archive", "Del archivo", "Fotos sin fecha exacta", undated.shuffled(random).take(STORY_SLIDES)))
+            }
+
             val favoritePhotos = favorites.filter { !it.isVideo }
             if (favoritePhotos.isNotEmpty()) add(Story("favorites", "Favoritas", "Lo que más te gusta", spread(favoritePhotos)))
+
+            // The current month is skipped: it is what the timeline already shows first.
+            val byMonth = dated.groupBy {
+                val d = Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate()
+                d.year * 12 + d.monthValue - 1
+            }
+            val thisMonth = today.year * 12 + today.monthValue - 1
+            byMonth.keys.filter { it < thisMonth }.sortedDescending().take(6).forEach { key ->
+                val list = byMonth.getValue(key)
+                if (list.size >= MIN_STORY) {
+                    val month = MONTHS_ES[key % 12]
+                    add(
+                        Story(
+                            "month-$key",
+                            month.replaceFirstChar { it.uppercase() },
+                            "Tu $month de ${key / 12}",
+                            spread(list.sortedBy { it.dateTakenMs })
+                        )
+                    )
+                }
+            }
         }
 
-        /** Photos taken within three days of today's date in earlier years, newest year first. */
+        /** Photos taken within a week of today's date in earlier years, newest year first. */
         fun memoriesOf(items: List<MediaItem>, today: LocalDate, zone: ZoneId): List<Memory> {
             val byYear = HashMap<Int, MutableList<MediaItem>>()
             for (item in items) {
-                if (item.isVideo) continue
+                if (item.isVideo || item.dateEstimated || item.isScreenshot) continue
                 val date = Instant.ofEpochMilli(item.dateTakenMs).atZone(zone).toLocalDate()
                 if (date.year >= today.year) continue
                 val distance = ChronoUnit.DAYS.between(today.withYear(date.year), date)
-                if (distance in -3..3) byYear.getOrPut(today.year - date.year) { ArrayList() }.add(item)
+                if (distance in -7..7) byYear.getOrPut(today.year - date.year) { ArrayList() }.add(item)
             }
             return byYear.toSortedMap().map { (years, list) -> Memory(years, list) }
         }
@@ -172,6 +248,7 @@ object MediaSearch {
                 buildString {
                     append(item.displayName).append(' ').append(item.bucketName).append(' ')
                     append(item.album.orEmpty()).append(' ')
+                    append(item.place.orEmpty()).append(' ')
                     append(MONTHS_ES[date.monthValue - 1]).append(' ').append(date.year).append(' ')
                     append(if (item.isVideo) "video" else "foto").append(' ')
                     if (item.isFavorite) append("favorito ")

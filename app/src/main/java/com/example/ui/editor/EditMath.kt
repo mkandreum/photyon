@@ -75,20 +75,98 @@ object ColorMath {
     }
 }
 
-enum class PhotoFilter(val label: String, val matrix: () -> FloatArray) {
-    Original("Original", { ColorMath.identity() }),
-    Vivid("Vivo", { ColorMath.then(ColorMath.saturation(1.35f), ColorMath.contrastBrightness(1.08f, 0f)) }),
-    Warm("Cálido", { ColorMath.then(ColorMath.warmth(0.12f), ColorMath.saturation(1.1f)) }),
-    Cold("Frío", { ColorMath.warmth(-0.12f) }),
-    Analog("Analógico", {
-        ColorMath.then(
-            ColorMath.then(ColorMath.saturation(0.8f), ColorMath.warmth(0.06f)),
-            ColorMath.contrastBrightness(0.85f, 0.03f)
-        )
-    }),
-    Silver("Plata", { ColorMath.then(ColorMath.saturation(0f), ColorMath.contrastBrightness(0.95f, 0.03f)) }),
-    Ink("Tinta", { ColorMath.then(ColorMath.saturation(0f), ColorMath.contrastBrightness(1.25f, 0f)) }),
-    Safelight("Cuarto oscuro", { ColorMath.safelight() })
+/** The numbers behind each roll. Polaroid and Kodachrome are published matrices; the rest are looks built from how the stock behaves. */
+private object Stocks {
+    private fun chain(vararg m: FloatArray) = m.reduce(ColorMath::then)
+
+    /** PixiJS's ColorMatrixFilter presets, whose offsets are in 0..1. */
+    private fun pixi(vararg v: Float) = floatArrayOf(
+        v[0], v[1], v[2], v[3], v[4] * 255f,
+        v[5], v[6], v[7], v[8], v[9] * 255f,
+        v[10], v[11], v[12], v[13], v[14] * 255f,
+        0f, 0f, 0f, 1f, 0f
+    )
+
+    val polaroid = pixi(
+        1.438f, -0.062f, -0.062f, 0f, 0f,
+        -0.122f, 1.378f, -0.122f, 0f, 0f,
+        -0.016f, -0.016f, 1.483f, 0f, 0f
+    )
+    val kodachrome = pixi(
+        1.1285582f, -0.39673823f, -0.039925592f, 0f, 0.24991995f,
+        -0.1640434f, 1.0835252f, -0.054988053f, 0f, 0.09698983f,
+        -0.16786011f, -0.56034166f, 1.6014851f, 0f, 0.13972482f
+    )
+
+    /** Warm yellows and reds, moderate contrast. */
+    val gold = chain(ColorMath.warmth(0.1f), ColorMath.saturation(1.1f), ColorMath.contrastBrightness(1.03f, 0.01f))
+
+    /** Moderate saturation and contrast, kind to skin. */
+    val portra = chain(ColorMath.saturation(0.9f), ColorMath.warmth(0.05f), ColorMath.contrastBrightness(0.94f, 0.02f))
+
+    /** The most saturated and contrasty Kodak negative. */
+    val ektar = chain(ColorMath.saturation(1.32f), ColorMath.contrastBrightness(1.12f, 0f), ColorMath.warmth(0.02f))
+
+    /** Fuji's neutral baseline: true colors, moderate contrast. */
+    val provia = chain(ColorMath.saturation(1.04f), ColorMath.contrastBrightness(1.03f, 0f))
+
+    /** Vivid and contrasty, with blues drifting towards magenta. */
+    val velvia = chain(
+        ColorMath.saturation(1.42f),
+        floatArrayOf(
+            1f, 0f, 0.04f, 0f, 0f,
+            0f, 1f, -0.02f, 0f, 0f,
+            0f, 0f, 1f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        ),
+        ColorMath.contrastBrightness(1.16f, -0.01f)
+    )
+
+    /** Documentary look: muted, less magenta, slightly cool shadows. */
+    val classicChrome = chain(
+        ColorMath.saturation(0.74f),
+        floatArrayOf(
+            0.97f, 0.02f, 0f, 0f, 0f,
+            0f, 1.02f, 0f, 0f, 0f,
+            0f, 0.02f, 0.98f, 0f, 5f,
+            0f, 0f, 0f, 1f, 0f
+        ),
+        ColorMath.contrastBrightness(1.06f, 0f)
+    )
+
+    /** Fine-grain black and white weighted towards green, as panchromatic film sees. */
+    val acros = chain(
+        floatArrayOf(
+            0.3f, 0.6f, 0.1f, 0f, 0f,
+            0.3f, 0.6f, 0.1f, 0f, 0f,
+            0.3f, 0.6f, 0.1f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        ),
+        ColorMath.contrastBrightness(1.14f, 0f)
+    )
+}
+
+/** Each filter is a roll of film: brand, stock, ISO and the colors of its box. */
+enum class PhotoFilter(
+    val label: String,
+    val brand: String,
+    val iso: String,
+    val casing: Long,
+    val band: Long,
+    val onCasing: Long,
+    val matrix: () -> FloatArray
+) {
+    Original("Original", "SIN", "FILTRO", 0xFF2E2A27, 0xFF9E958E, 0xFFF6F1EC, { ColorMath.identity() }),
+    Polaroid("Polaroid", "POLAROID", "600", 0xFFF2EEE6, 0xFFE4483B, 0xFF1F1C1A, { Stocks.polaroid }),
+    Kodachrome("Kodachrome", "KODAK", "64", 0xFFFFC21C, 0xFFD62B1F, 0xFF1F1C1A, { Stocks.kodachrome }),
+    Gold("Gold", "KODAK", "200", 0xFFFFB400, 0xFFC8102E, 0xFF1F1C1A, { Stocks.gold }),
+    Portra("Portra", "KODAK", "400", 0xFFF4E9D3, 0xFFE0A526, 0xFF1F1C1A, { Stocks.portra }),
+    Ektar("Ektar", "KODAK", "100", 0xFFD9262E, 0xFFFFC21C, 0xFFFFFFFF, { Stocks.ektar }),
+    Velvia("Velvia", "FUJI", "50", 0xFF0B7A4B, 0xFFE6007E, 0xFFFFFFFF, { Stocks.velvia }),
+    Provia("Provia", "FUJI", "100", 0xFF1B9E5A, 0xFF0B3D91, 0xFFFFFFFF, { Stocks.provia }),
+    ClassicChrome("Chrome", "FUJI", "CLASSIC", 0xFF4F5B52, 0xFFC9B27A, 0xFFFFFFFF, { Stocks.classicChrome }),
+    Acros("Acros", "FUJI", "100", 0xFF17191A, 0xFFD8D8D8, 0xFFFFFFFF, { Stocks.acros }),
+    Safelight("Cuarto oscuro", "PHOTYON", "ROJO", 0xFF0C0B0A, 0xFFFF5B3A, 0xFFFF5B3A, { ColorMath.safelight() })
 }
 
 @Immutable

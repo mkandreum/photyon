@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material3.MaterialTheme
@@ -86,6 +87,7 @@ fun TimeDial(state: TimelineState, modifier: Modifier = Modifier) {
             .fillMaxHeight()
             .padding(vertical = 96.dp)
             .width(if (grabbed) 220.dp else 44.dp)
+            .systemGestureExclusion()
             .onSizeChanged { heightPx = it.height.coerceAtLeast(1) }
             .pointerInput(rowCount) {
                 detectVerticalDragGestures(

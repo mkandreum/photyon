@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.withContext
@@ -71,8 +72,17 @@ class GalleryRepository(
     }.flowOn(Dispatchers.IO)
 
     fun library(): Flow<Library> =
-        combine(snapshots(), overridesDao.getAllOverrides()) { snapshot, overrides ->
-            Library.build(snapshot.items, overrides.associateBy { it.mediaId }, snapshot.complete)
+        combine(
+            snapshots(),
+            overridesDao.getAllOverrides(),
+            database.mediaPlaceDao().named().distinctUntilChanged()
+        ) { snapshot, overrides, places ->
+            Library.build(
+                snapshot.items,
+                overrides.associateBy { it.mediaId },
+                snapshot.complete,
+                places = places.associate { it.mediaId to it.place }
+            )
         }.flowOn(Dispatchers.Default)
 
     private suspend fun readAll(limit: Int?): List<MediaItem> = coroutineScope {
@@ -106,13 +116,18 @@ class GalleryRepository(
             if (limit != null) putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
         }
         val out = ArrayList<MediaItem>(limit ?: 4096)
+        val now = System.currentTimeMillis()
         try {
             context.contentResolver.query(collection, projection, args, null)?.use { c ->
                 var n = 0
                 while (c.moveToNext()) {
                     if (++n and 0xFF == 0) currentCoroutineContext().ensureActive()
                     val id = c.getLong(0)
+                    val name = c.getString(1).orEmpty()
                     val taken = c.getLong(2)
+                    val fromName = if (taken > 0) null else MediaDates.fromFileName(name, now)
+                    val added = c.getLong(3) * 1000
+                    val modified = c.getLong(4) * 1000
                     val orientation = c.getInt(8)
                     val w = c.getInt(6)
                     val h = c.getInt(7)
@@ -122,8 +137,15 @@ class GalleryRepository(
                             id = if (isVideo) "v$id" else id.toString(),
                             mediaId = id,
                             isVideo = isVideo,
-                            displayName = c.getString(1).orEmpty(),
-                            dateTakenMs = if (taken > 0) taken else c.getLong(3) * 1000,
+                            displayName = name,
+                            dateTakenMs = when {
+                                taken > 0 -> taken
+                                fromName != null -> fromName
+                                // A restored file keeps its older modification date; closer to the truth than the import.
+                                modified in 1 until added -> modified
+                                else -> added
+                            },
+                            dateEstimated = taken <= 0 && fromName == null,
                             dateModifiedSec = c.getLong(4),
                             sizeBytes = c.getLong(5),
                             width = if (swap) h else w,

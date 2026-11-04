@@ -3,6 +3,7 @@ package com.example.ui.viewer
 import android.view.TextureView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -19,14 +20,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,6 +43,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -360,21 +363,39 @@ private fun VideoPage(
                     .padding(bottom = 136.dp, start = 20.dp, end = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                Slider(
-                    value = position,
-                    onValueChange = {
-                        position = it
-                        val duration = player.duration.takeIf { d -> d > 0 } ?: item.durationMs
-                        player.seekTo((it * duration).toLong())
-                    },
-                    colors = SliderDefaults.colors(
-                        thumbColor = Darkroom.Accent,
-                        activeTrackColor = Darkroom.Accent,
-                        inactiveTrackColor = Darkroom.Hairline
-                    )
-                )
+                Canvas(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(32.dp)
+                        .systemGestureExclusion()
+                        .pointerInput(player) {
+                            fun seek(x: Float) {
+                                val f = (x / size.width).coerceIn(0f, 1f)
+                                position = f
+                                val duration = player.duration.takeIf { d -> d > 0 } ?: item.durationMs
+                                player.seekTo((f * duration).toLong())
+                            }
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                seek(down.position.x)
+                                down.consume()
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.first()
+                                    seek(change.position.x)
+                                    change.consume()
+                                } while (change.pressed)
+                            }
+                        }
+                ) {
+                    val y = size.height / 2f
+                    val x = size.width * position
+                    drawLine(Color.White.copy(alpha = 0.3f), Offset(0f, y), Offset(size.width, y), 3.dp.toPx(), StrokeCap.Round)
+                    drawLine(Darkroom.Accent, Offset(0f, y), Offset(x, y), 3.dp.toPx(), StrokeCap.Round)
+                    drawCircle(Darkroom.Accent, 6.dp.toPx(), Offset(x, y))
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Text(item.durationLabel, style = MaterialTheme.typography.labelSmall, color = Darkroom.Muted)
+                    Text(item.durationLabel, style = MaterialTheme.typography.labelSmall, color = Color.White)
                 }
             }
         }
