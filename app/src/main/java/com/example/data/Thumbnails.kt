@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
+import android.media.MediaMetadataRetriever
 import android.os.Process
 import android.util.LruCache
 import android.util.Size
@@ -63,7 +64,30 @@ object Thumbnails {
     private fun fileName(item: MediaItem) = "${item.id}_${item.dateModifiedSec}.jpg"
 
     private fun render(ctx: Context, item: MediaItem, px: Int): Bitmap =
-        ctx.contentResolver.loadThumbnail(item.uri, Size(px, px), null)
+        try {
+            ctx.contentResolver.loadThumbnail(item.uri, Size(px, px), null)
+        } catch (e: java.io.IOException) {
+            // The system cannot thumbnail some videos; a frame of the video itself still can be read.
+            if (item.isVideo) videoFrame(ctx, item, px) else throw e
+        }
+
+    private fun videoFrame(ctx: Context, item: MediaItem, px: Int): Bitmap {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(ctx, item.uri)
+            val w = item.width.coerceAtLeast(1)
+            val h = item.height.coerceAtLeast(1)
+            val scale = minOf(1f, px.toFloat() / minOf(w, h))
+            return retriever.getScaledFrameAtTime(
+                0L,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                (w * scale).toInt().coerceAtLeast(1),
+                (h * scale).toInt().coerceAtLeast(1)
+            ) ?: error("no frame")
+        } finally {
+            retriever.release()
+        }
+    }
 
     /** Returns the disk thumbnail, creating it when missing. */
     private fun fileFor(ctx: Context, item: MediaItem): File {
