@@ -5,10 +5,9 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [MediaOverride::class, CachedMediaItem::class], version = 3, exportSchema = false)
+@Database(entities = [MediaOverride::class], version = 1, exportSchema = false)
 abstract class GalleryDatabase : RoomDatabase() {
     abstract fun mediaOverrideDao(): MediaOverrideDao
-    abstract fun cachedMediaDao(): CachedMediaDao
 
     companion object {
         @Volatile
@@ -16,15 +15,13 @@ abstract class GalleryDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): GalleryDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
+                INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     GalleryDatabase::class.java,
                     "gallery_database"
                 )
-                .fallbackToDestructiveMigration()
-                .build()
-                INSTANCE = instance
-                instance
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }
