@@ -343,7 +343,9 @@ private fun PhotoEditor(item: MediaItem, onClose: () -> Unit, onSaved: () -> Uni
                         item.displayName,
                         contentScale = ContentScale.FillBounds,
                         colorFilter = filter,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .filmGrain(if (comparing) 0f else values.filter.grain)
                     )
                     if (tab == "Recortar") {
                         CropOverlay(crop, ratio, aspect) { crop = it }
@@ -473,6 +475,7 @@ private fun FilmRoll(filter: PhotoFilter, small: Bitmap?, selected: Boolean, onC
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(vertical = 10.dp, horizontal = 2.dp)
+                            .filmGrain(filter.grain)
                     )
                 }
                 Canvas(Modifier.fillMaxSize()) {

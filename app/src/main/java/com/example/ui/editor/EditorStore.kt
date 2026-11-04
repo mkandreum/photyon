@@ -123,7 +123,9 @@ object EditorStore {
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val paint = Paint(Paint.FILTER_BITMAP_FLAG)
         if (!values.isOriginal) paint.colorFilter = ColorMatrixColorFilter(ColorMatrix(ColorMath.of(values)))
-        Canvas(out).drawBitmap(turned, -x.toFloat(), -y.toFloat(), paint)
+        val canvas = Canvas(out)
+        canvas.drawBitmap(turned, -x.toFloat(), -y.toFloat(), paint)
+        Grain.draw(canvas, w, h, values.filter.grain)
         if (turned !== original) turned.recycle()
         original.recycle()
         try {

@@ -127,6 +127,9 @@ fun Viewer(
 
     val current = items.getOrNull(pager.currentPage.coerceAtMost(items.lastIndex))
     val revealed by remember { derivedStateOf { reveal.value > 0.5f } }
+    // The details sheet is transparent until lifted; it must not exist in the touch tree while hidden or it
+    // swallows taps meant for the film strip and the action pill underneath.
+    val panelVisible by remember { derivedStateOf { reveal.value > 0.01f } }
 
     // Immersive while chrome is hidden; always restored on exit.
     val window = (context as? Activity)?.window
@@ -400,25 +403,27 @@ fun Viewer(
             }
 
             // Details rise from under the lifted photo
-            DetailsPanel(
-                item = current,
-                sameDay = remember(items, current.id) { sameDayOf(items, current) },
-                onJump = { target ->
-                    val idx = items.indexOfFirst { it.id == target.id }
-                    if (idx >= 0) scope.launch {
-                        pager.scrollToPage(idx)
-                    }
-                },
-                actions = actions,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .graphicsLayer {
-                        alpha = reveal.value
-                        translationY = (1f - reveal.value) * panelHeightPx * 0.4f
+            if (panelVisible) {
+                DetailsPanel(
+                    item = current,
+                    sameDay = remember(items, current.id) { sameDayOf(items, current) },
+                    onJump = { target ->
+                        val idx = items.indexOfFirst { it.id == target.id }
+                        if (idx >= 0) scope.launch {
+                            pager.scrollToPage(idx)
+                        }
                     },
-                enabled = revealed,
-                heightFraction = 0.58f
-            )
+                    actions = actions,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .graphicsLayer {
+                            alpha = reveal.value
+                            translationY = (1f - reveal.value) * panelHeightPx * 0.4f
+                        },
+                    enabled = revealed,
+                    heightFraction = 0.58f
+                )
+            }
         }
     }
 

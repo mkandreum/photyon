@@ -154,19 +154,21 @@ enum class PhotoFilter(
     val casing: Long,
     val band: Long,
     val onCasing: Long,
+    /** Film grain strength, 0..1, applied by the editor preview and export. */
+    val grain: Float = 0f,
     val matrix: () -> FloatArray
 ) {
-    Original("Original", "SIN", "FILTRO", 0xFF2E2A27, 0xFF9E958E, 0xFFF6F1EC, { ColorMath.identity() }),
-    Polaroid("Polaroid", "POLAROID", "600", 0xFFF2EEE6, 0xFFE4483B, 0xFF1F1C1A, { Stocks.polaroid }),
-    Kodachrome("Kodachrome", "KODAK", "64", 0xFFFFC21C, 0xFFD62B1F, 0xFF1F1C1A, { Stocks.kodachrome }),
-    Gold("Gold", "KODAK", "200", 0xFFFFB400, 0xFFC8102E, 0xFF1F1C1A, { Stocks.gold }),
-    Portra("Portra", "KODAK", "400", 0xFFF4E9D3, 0xFFE0A526, 0xFF1F1C1A, { Stocks.portra }),
-    Ektar("Ektar", "KODAK", "100", 0xFFD9262E, 0xFFFFC21C, 0xFFFFFFFF, { Stocks.ektar }),
-    Velvia("Velvia", "FUJI", "50", 0xFF0B7A4B, 0xFFE6007E, 0xFFFFFFFF, { Stocks.velvia }),
-    Provia("Provia", "FUJI", "100", 0xFF1B9E5A, 0xFF0B3D91, 0xFFFFFFFF, { Stocks.provia }),
-    ClassicChrome("Chrome", "FUJI", "CLASSIC", 0xFF4F5B52, 0xFFC9B27A, 0xFFFFFFFF, { Stocks.classicChrome }),
-    Acros("Acros", "FUJI", "100", 0xFF17191A, 0xFFD8D8D8, 0xFFFFFFFF, { Stocks.acros }),
-    Safelight("Cuarto oscuro", "PHOTYON", "ROJO", 0xFF0C0B0A, 0xFFFF5B3A, 0xFFFF5B3A, { ColorMath.safelight() })
+    Original("Original", "SIN", "FILTRO", 0xFF2E2A27, 0xFF9E958E, 0xFFF6F1EC, grain = 0f, matrix = { ColorMath.identity() }),
+    Polaroid("Polaroid", "POLAROID", "600", 0xFFF2EEE6, 0xFFE4483B, 0xFF1F1C1A, grain = 0.20f, matrix = { Stocks.polaroid }),
+    Kodachrome("Kodachrome", "KODAK", "64", 0xFFFFC21C, 0xFFD62B1F, 0xFF1F1C1A, grain = 0.14f, matrix = { Stocks.kodachrome }),
+    Gold("Gold", "KODAK", "200", 0xFFFFB400, 0xFFC8102E, 0xFF1F1C1A, grain = 0.10f, matrix = { Stocks.gold }),
+    Portra("Portra", "KODAK", "400", 0xFFF4E9D3, 0xFFE0A526, 0xFF1F1C1A, grain = 0.07f, matrix = { Stocks.portra }),
+    Ektar("Ektar", "KODAK", "100", 0xFFD9262E, 0xFFFFC21C, 0xFFFFFFFF, grain = 0.06f, matrix = { Stocks.ektar }),
+    Velvia("Velvia", "FUJI", "50", 0xFF0B7A4B, 0xFFE6007E, 0xFFFFFFFF, grain = 0.05f, matrix = { Stocks.velvia }),
+    Provia("Provia", "FUJI", "100", 0xFF1B9E5A, 0xFF0B3D91, 0xFFFFFFFF, grain = 0.05f, matrix = { Stocks.provia }),
+    ClassicChrome("Chrome", "FUJI", "CLASSIC", 0xFF4F5B52, 0xFFC9B27A, 0xFFFFFFFF, grain = 0.08f, matrix = { Stocks.classicChrome }),
+    Acros("Acros", "FUJI", "100", 0xFF17191A, 0xFFD8D8D8, 0xFFFFFFFF, grain = 0.18f, matrix = { Stocks.acros }),
+    Safelight("Cuarto oscuro", "PHOTYON", "ROJO", 0xFF0C0B0A, 0xFFFF5B3A, 0xFFFF5B3A, grain = 0.12f, matrix = { ColorMath.safelight() })
 }
 
 @Immutable
