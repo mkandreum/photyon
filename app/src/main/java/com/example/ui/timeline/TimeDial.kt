@@ -78,6 +78,9 @@ fun TimeDial(state: TimelineState, modifier: Modifier = Modifier) {
         label = "dial"
     )
     val spread by animateFloatAsState(if (grabbed) 1f else 0f, tween(160), label = "dialSpread")
+    // The edge belongs to the system back gesture. The dial only listens while it is visible (after a scroll)
+    // or already grabbed, and asks for gesture exclusion only during the drag itself.
+    val dialActive by remember { derivedStateOf { visible > 0.01f || grabbed } }
 
     val rowCount = state.rows.rows.size
     val years = remember(anchors) { anchors.distinctBy { it.year } }
@@ -86,10 +89,13 @@ fun TimeDial(state: TimelineState, modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxHeight()
             .padding(vertical = 96.dp)
+            // Leaves the outer 18dp free for Android's back gesture.
+            .padding(end = 18.dp)
             .width(if (grabbed) 220.dp else 44.dp)
-            .systemGestureExclusion()
+            .then(if (grabbed) Modifier.systemGestureExclusion() else Modifier)
             .onSizeChanged { heightPx = it.height.coerceAtLeast(1) }
-            .pointerInput(rowCount) {
+            .pointerInput(rowCount, dialActive) {
+                if (!dialActive) return@pointerInput
                 detectVerticalDragGestures(
                     onDragStart = { offset ->
                         // Only the visible thumb area grabs, so edge swipes keep scrolling the list.
