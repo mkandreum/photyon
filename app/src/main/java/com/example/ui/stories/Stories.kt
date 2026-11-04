@@ -3,7 +3,6 @@ package com.example.ui.stories
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -45,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -205,7 +205,10 @@ fun StoryPlayer(
 
     fun next() {
         when {
-            slide < story.items.lastIndex -> slide++
+            slide < story.items.lastIndex -> {
+                slide++
+                haptics.tick()
+            }
             storyIndex < stories.lastIndex -> {
                 storyIndex++
                 slide = 0
@@ -217,7 +220,10 @@ fun StoryPlayer(
 
     fun previous() {
         when {
-            slide > 0 -> slide--
+            slide > 0 -> {
+                slide--
+                haptics.tick()
+            }
             storyIndex > 0 -> {
                 storyIndex--
                 slide = 0
@@ -247,8 +253,14 @@ fun StoryPlayer(
     val updatedNext by rememberUpdatedState(::next)
     LaunchedEffect(storyIndex, slide, paused) {
         if (!paused) {
-            val left = ((1f - progress.value) * SLIDE_MS).toInt().coerceAtLeast(1)
-            progress.animateTo(1f, tween(left, easing = LinearEasing))
+            // Frame clock, not an animation: with system animations off, a tween would finish at once and
+            // every story would race past.
+            val start = progress.value
+            val began = withFrameMillis { it }
+            while (progress.value < 1f) {
+                val now = withFrameMillis { it }
+                progress.snapTo((start + (now - began).toFloat() / SLIDE_MS).coerceAtMost(1f))
+            }
             updatedNext()
         }
     }
@@ -294,7 +306,6 @@ fun StoryPlayer(
                         }
                         // A long hold only pauses; a quick tap steps.
                         lastTime - startedAt < 220 -> {
-                            haptics.tick()
                             if (down.position.x < size.width * 0.33f) previous() else next()
                         }
                     }
@@ -395,7 +406,7 @@ fun StoryPlayer(
             Box(
                 Modifier
                     .size(48.dp)
-                    .bounceClick(pressedScale = 0.8f, feedback = { it.confirm() }) { onFavorite(item) },
+                    .bounceClick(pressedScale = 0.8f, feedback = { it.pop() }) { onFavorite(item) },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(

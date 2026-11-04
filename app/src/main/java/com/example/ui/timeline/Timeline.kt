@@ -2,6 +2,7 @@ package com.example.ui.timeline
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -453,13 +454,20 @@ private fun Tile(
             .background(Darkroom.Raised)
             .clickable(onClickLabel = "Abrir") { onTap(item) }
     ) {
-        val inset = if (isSelected) 0.88f else 1f
+        // Only selection mode pays for the animation state; scrolling tiles stay as light as possible.
+        val inset = if (selectionMode) {
+            animateFloatAsState(
+                if (isSelected) 0.88f else 1f,
+                spring(dampingRatio = 0.6f, stiffness = 600f),
+                label = "tileInset"
+            ).value
+        } else 1f
         val wide = widthFraction > 0.9f && parallax != null
         val imageModifier = Modifier
             .fillMaxSize()
             .then(
                 when {
-                    isSelected -> Modifier.graphicsLayer { scaleX = inset; scaleY = inset }
+                    inset != 1f -> Modifier.graphicsLayer { scaleX = inset; scaleY = inset }
                     // Full-width photos drift against the scroll, read in the draw phase only.
                     wide -> Modifier.graphicsLayer {
                         scaleX = 1.14f

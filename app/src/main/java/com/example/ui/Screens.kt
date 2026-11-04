@@ -2,7 +2,6 @@ package com.example.ui
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,6 +49,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -164,7 +164,11 @@ private fun LivingCover(story: Story, alive: Boolean, onClick: () -> Unit) {
     LaunchedEffect(story.id, alive) {
         while (alive && isActive) {
             drift.snapTo(0f)
-            drift.animateTo(1f, tween(6000, easing = LinearEasing))
+            val began = withFrameMillis { it }
+            while (drift.value < 1f) {
+                val now = withFrameMillis { it }
+                drift.snapTo(((now - began) / 6000f).coerceAtMost(1f))
+            }
             index = (index + 1) % story.items.size
         }
     }

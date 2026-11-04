@@ -1,8 +1,10 @@
 package com.example.ui.components
 
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.animation.animateColorAsState
@@ -112,10 +114,15 @@ class Haptics(private val view: View) {
     private fun play(fallback: Int, vararg primitives: Pair<Int, Float>) {
         val v = vibrator
         val ids = primitives.map { it.first }.toIntArray()
+        val touchFeedbackOn = Settings.System.getInt(
+            view.context.contentResolver, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1
+        ) != 0
+        if (!touchFeedbackOn) return
         if (v != null && view.isHapticFeedbackEnabled && v.areAllPrimitivesSupported(*ids)) {
             val composition = VibrationEffect.startComposition()
             primitives.forEach { (id, scale) -> composition.addPrimitive(id, scale) }
-            v.vibrate(composition.compose())
+            // Touch usage: follows the intensity the user chose for touch vibration.
+            v.vibrate(composition.compose(), VibrationAttributes.createForUsage(VibrationAttributes.USAGE_TOUCH))
         } else {
             view.performHapticFeedback(fallback)
         }
@@ -140,7 +147,7 @@ class Haptics(private val view: View) {
     fun threshold() = play(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE, VibrationEffect.Composition.PRIMITIVE_THUD to 0.6f)
 
     /** A soft landing: favorites, zoom in. */
-    fun pop() = play(HapticFeedbackConstants.CONFIRM, VibrationEffect.Composition.PRIMITIVE_SPIN to 0.5f)
+    fun pop() = play(HapticFeedbackConstants.CONFIRM, VibrationEffect.Composition.PRIMITIVE_CLICK to 0.7f)
 }
 
 @Composable

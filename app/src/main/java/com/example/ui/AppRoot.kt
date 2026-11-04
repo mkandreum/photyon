@@ -250,6 +250,7 @@ fun AppRoot(viewModel: GalleryViewModel) {
         trashLauncher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
     }
 
+    val unlockHaptics = rememberHaptics()
     fun openHidden() {
         if (hiddenUnlocked) {
             hiddenHome = true
@@ -259,7 +260,7 @@ fun AppRoot(viewModel: GalleryViewModel) {
         val strongOrLock = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
         val manager = context.getSystemService(BiometricManager::class.java)
         if (manager?.canAuthenticate(strongOrLock) != BiometricManager.BIOMETRIC_SUCCESS) {
-            viewModel.showNotice("Activa la huella o un bloqueo de pantalla para usar Oculto")
+            viewModel.showError("Activa la huella o un bloqueo de pantalla para usar Oculto")
             return
         }
         BiometricPrompt.Builder(activity)
@@ -272,6 +273,7 @@ fun AppRoot(viewModel: GalleryViewModel) {
                 activity.mainExecutor,
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        unlockHaptics.confirm()
                         hiddenUnlocked = true
                         hiddenHome = true
                     }
@@ -319,6 +321,8 @@ fun AppRoot(viewModel: GalleryViewModel) {
 
     // The nav slides away while reading downwards and returns on any upward scroll.
     var navShown by remember { mutableStateOf(true) }
+    // Coming back from anything full-screen must never leave the navigation hidden.
+    LaunchedEffect(viewer, collection, hiddenHome) { navShown = true }
     val navConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -462,7 +466,7 @@ fun AppRoot(viewModel: GalleryViewModel) {
                 primaryLabel = "Abrir la cámara",
                 onPrimary = {
                     runCatching { context.startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
-                        .onFailure { viewModel.showNotice("No hay ninguna app de cámara") }
+                        .onFailure { viewModel.showError("No hay ninguna app de cámara") }
                 }
             )
         }
@@ -527,16 +531,25 @@ fun AppRoot(viewModel: GalleryViewModel) {
             )
         }
 
-        editing?.let { item ->
-            Editor(
-                item = item,
-                onClose = { editing = null },
-                onSaved = {
-                    editing = null
-                    viewModel.showNotice("Copia guardada junto a la original")
-                },
-                onError = viewModel::showNotice
-            )
+        // The editor rises over the viewer; the last item is kept so it can leave with an animation too.
+        val lastEdited = remember { mutableStateOf<MediaItem?>(null) }
+        editing?.let { lastEdited.value = it }
+        AnimatedVisibility(
+            visible = editing != null,
+            enter = fadeIn(tween(180)) + slideInVertically(spring(dampingRatio = 0.9f, stiffness = 500f)) { it / 8 },
+            exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 10 }
+        ) {
+            lastEdited.value?.let { item ->
+                Editor(
+                    item = item,
+                    onClose = { editing = null },
+                    onSaved = {
+                        editing = null
+                        viewModel.showNotice("Copia guardada junto a la original")
+                    },
+                    onError = viewModel::showError
+                )
+            }
         }
 
         storyAt?.let { start ->
@@ -697,7 +710,7 @@ private fun NoticeHost(notice: Notice?, onDismiss: (Notice) -> Unit, modifier: M
     notice?.let { last.value = it }
     LaunchedEffect(notice?.id) {
         val current = notice ?: return@LaunchedEffect
-        haptics.confirm()
+        if (current.isError) haptics.reject() else haptics.confirm()
         delay(if (current.action != null) 5000 else 2500)
         onDismiss(current)
     }

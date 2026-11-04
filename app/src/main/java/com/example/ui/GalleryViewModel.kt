@@ -28,7 +28,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-data class Notice(val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null, val id: Long = System.nanoTime())
+data class Notice(val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null, val isError: Boolean = false, val id: Long = System.nanoTime())
 
 class GalleryViewModel(application: Application) : AndroidViewModel(application) {
     private val app get() = getApplication<GalleryApplication>()
@@ -111,6 +111,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun showNotice(text: String) {
         _notice.value = Notice(text)
+    }
+
+    fun showError(text: String) {
+        _notice.value = Notice(text, isError = true)
     }
 
     fun dismissNotice(notice: Notice) {

@@ -157,7 +157,7 @@ private fun EditorFrame(
             Box(
                 Modifier
                     .height(44.dp)
-                    .bounceClick(enabled = dirty && !saving, feedback = { it.confirm() }, onClick = onSave)
+                    .bounceClick(enabled = dirty && !saving, onClick = onSave)
                     .clip(PillShape)
                     .background(if (dirty) Darkroom.Accent else Darkroom.Chip)
                     .padding(horizontal = 18.dp),
@@ -240,8 +240,12 @@ private fun EditSlider(
     value: Float,
     range: ClosedFloatingPointRange<Float>,
     display: String,
+    neutral: Float = 0f,
     onValue: (Float) -> Unit
 ) {
+    val haptics = rememberHaptics()
+    // A small detent at "no change", felt under the finger.
+    val magnet = (range.endInclusive - range.start) * 0.02f
     Column(Modifier.padding(horizontal = 18.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label.uppercase(), style = MaterialTheme.typography.labelSmall, color = Darkroom.Muted)
@@ -249,7 +253,11 @@ private fun EditSlider(
         }
         Slider(
             value = value,
-            onValueChange = onValue,
+            onValueChange = { raw ->
+                val snapped = if (abs(raw - neutral) < magnet) neutral else raw
+                if (snapped == neutral && value != neutral) haptics.tick()
+                onValue(snapped)
+            },
             valueRange = range,
             colors = SliderDefaults.colors(
                 thumbColor = Darkroom.Accent,
@@ -368,10 +376,10 @@ private fun PhotoEditor(item: MediaItem, onClose: () -> Unit, onSaved: () -> Uni
                     }
                     "Luz" -> Column(Modifier.verticalScroll(rememberScrollState())) {
                         EditSlider("Brillo", values.brightness, -0.4f..0.4f, values.brightness.editLabel()) { values = values.copy(brightness = it) }
-                        EditSlider("Contraste", values.contrast, 0.6f..1.6f, (values.contrast - 1f).editLabel()) { values = values.copy(contrast = it) }
+                        EditSlider("Contraste", values.contrast, 0.6f..1.6f, (values.contrast - 1f).editLabel(), neutral = 1f) { values = values.copy(contrast = it) }
                     }
                     "Color" -> Column(Modifier.verticalScroll(rememberScrollState())) {
-                        EditSlider("Saturación", values.saturation, 0f..2f, (values.saturation - 1f).editLabel()) { values = values.copy(saturation = it) }
+                        EditSlider("Saturación", values.saturation, 0f..2f, (values.saturation - 1f).editLabel(), neutral = 1f) { values = values.copy(saturation = it) }
                         EditSlider("Temperatura", values.warmth, -0.3f..0.3f, values.warmth.editLabel()) { values = values.copy(warmth = it) }
                     }
                     else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
@@ -733,8 +741,8 @@ private fun VideoEditor(item: MediaItem, onClose: () -> Unit, onSaved: () -> Uni
                     }
                     "Color" -> Column(Modifier.verticalScroll(rememberScrollState())) {
                         EditSlider("Brillo", brightness, -0.4f..0.4f, brightness.editLabel()) { brightness = it }
-                        EditSlider("Contraste", contrast, 0.6f..1.6f, (contrast - 1f).editLabel()) { contrast = it }
-                        EditSlider("Saturación", saturation, 0f..2f, (saturation - 1f).editLabel()) { saturation = it }
+                        EditSlider("Contraste", contrast, 0.6f..1.6f, (contrast - 1f).editLabel(), neutral = 1f) { contrast = it }
+                        EditSlider("Saturación", saturation, 0f..2f, (saturation - 1f).editLabel(), neutral = 1f) { saturation = it }
                     }
                     "Velocidad" -> Row(
                         Modifier.fillMaxSize().padding(horizontal = 14.dp),
