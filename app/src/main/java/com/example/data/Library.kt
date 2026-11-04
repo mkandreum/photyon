@@ -13,6 +13,30 @@ data class Album(val id: String, val name: String, val items: List<MediaItem>, v
 @Immutable
 data class Memory(val yearsAgo: Int, val items: List<MediaItem>)
 
+/** A short full-screen slideshow. */
+@Immutable
+data class Story(val id: String, val title: String, val subtitle: String, val items: List<MediaItem>)
+
+/** When a story's photos were taken: "4 NOV 2024", "2-6 NOV 2024", "MAR-NOV 2024" or "2019-2024". */
+fun Story.dateLabel(zone: ZoneId = ZoneId.systemDefault()): String {
+    val dates = items.map { Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate() }
+    val first = dates.min()
+    val last = dates.max()
+    fun month(d: LocalDate) = MONTHS_ES[d.monthValue - 1].take(3).uppercase()
+    return when {
+        first == last -> "${first.dayOfMonth} ${month(first)} ${first.year}"
+        first.year != last.year -> "${first.year}-${last.year}"
+        first.monthValue != last.monthValue -> "${month(first)}-${month(last)} ${first.year}"
+        else -> "${first.dayOfMonth}-${last.dayOfMonth} ${month(first)} ${first.year}"
+    }
+}
+
+@Immutable
+data class YearStat(val year: Int, val items: List<MediaItem>)
+
+@Immutable
+data class BusiestDay(val date: LocalDate, val count: Int)
+
 /** Everything the UI shows, computed once off the main thread per catalog change. */
 @Immutable
 class Library(
@@ -22,11 +46,15 @@ class Library(
     val hidden: List<MediaItem>,
     val albums: List<Album>,
     val memories: List<Memory>,
+    val hiddenAlbums: List<Album>,
+    val stories: List<Story>,
+    val years: List<YearStat>,
+    val busiestDay: BusiestDay?,
     /** False while only the newest page has been read (fast first frame). */
     val complete: Boolean
 ) {
     companion object {
-        val EMPTY = Library(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), false)
+        val EMPTY = Library(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), null, false)
 
         fun build(
             media: List<MediaItem>,
@@ -40,11 +68,7 @@ class Library(
                 item.copy(
                     isFavorite = o.isFavorite,
                     isHidden = o.isHidden,
-                    album = o.customAlbum?.takeIf { it.isNotBlank() },
-                    rotation = o.rotation,
-                    brightness = o.brightness,
-                    contrast = o.contrast,
-                    saturation = o.saturation
+                    album = o.customAlbum?.takeIf { it.isNotBlank() }
                 )
             }
             val visible = merged.filter { !it.isHidden }
@@ -52,17 +76,64 @@ class Library(
                 .map { (id, list) -> Album(id, list.first().bucketName.ifBlank { "Sin nombre" }, list) }
             val custom = visible.filter { it.album != null }.groupBy { it.album!! }
                 .map { (name, list) -> Album("custom:$name", name, list, isCustom = true) }
+            val hidden = merged.filter { it.isHidden }
+            val memories = memoriesOf(visible, today, zone)
+            val favorites = visible.filter { it.isFavorite }
+            val dates = visible.map { Instant.ofEpochMilli(it.dateTakenMs).atZone(zone).toLocalDate() }
+            val perDay = dates.groupingBy { it }.eachCount()
             return Library(
                 timeline = visible,
-                favorites = visible.filter { it.isFavorite },
+                favorites = favorites,
                 videos = visible.filter { it.isVideo },
-                hidden = merged.filter { it.isHidden },
+                hidden = hidden,
+                hiddenAlbums = hidden.groupBy { it.album ?: it.bucketName.ifBlank { "Sin nombre" } }
+                    .map { (name, list) -> Album("hidden:$name", name, list) }
+                    .sortedByDescending { it.items.first().dateTakenMs },
+                stories = storiesOf(memories, favorites, visible, today),
+                years = visible.indices.groupBy { dates[it].year }
+                    .map { (year, rows) -> YearStat(year, rows.map { visible[it] }) }
+                    .sortedByDescending { it.year },
+                busiestDay = perDay.maxByOrNull { it.value }?.let { BusiestDay(it.key, it.value) },
                 albums = (custom + buckets).sortedWith(
                     compareByDescending<Album> { it.isCustom }.thenByDescending { it.items.first().dateTakenMs }
                 ),
-                memories = memoriesOf(visible, today, zone),
+                memories = memories,
                 complete = complete
             )
+        }
+
+        private const val STORY_SLIDES = 12
+
+        /** At most [STORY_SLIDES] photos, spread evenly so one big burst does not fill a whole story. */
+        private fun spread(items: List<MediaItem>): List<MediaItem> {
+            if (items.size <= STORY_SLIDES) return items
+            return List(STORY_SLIDES) { items[it * items.size / STORY_SLIDES] }
+        }
+
+        /** Memories first, then a daily surprise (same picks all day) and the favorites. */
+        fun storiesOf(
+            memories: List<Memory>,
+            favorites: List<MediaItem>,
+            visible: List<MediaItem>,
+            today: LocalDate
+        ): List<Story> = buildList {
+            memories.forEach { m ->
+                add(
+                    Story(
+                        "memory-${m.yearsAgo}",
+                        if (m.yearsAgo == 1) "Hace 1 año" else "Hace ${m.yearsAgo} años",
+                        "Estos días en ${today.year - m.yearsAgo}",
+                        spread(m.items)
+                    )
+                )
+            }
+            val photos = visible.filter { !it.isVideo }
+            if (photos.size >= 6) {
+                val picks = photos.shuffled(java.util.Random(today.toEpochDay())).take(STORY_SLIDES).sortedBy { it.dateTakenMs }
+                add(Story("surprise", "Sorpresa", "Elegidas al azar para hoy", picks))
+            }
+            val favoritePhotos = favorites.filter { !it.isVideo }
+            if (favoritePhotos.isNotEmpty()) add(Story("favorites", "Favoritas", "Lo que más te gusta", spread(favoritePhotos)))
         }
 
         /** Photos taken within three days of today's date in earlier years, newest year first. */
