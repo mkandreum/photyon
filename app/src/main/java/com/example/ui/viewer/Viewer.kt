@@ -1,7 +1,7 @@
 package com.example.ui.viewer
 
 import android.app.Activity
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.Animatable
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -16,6 +16,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -49,17 +54,26 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -75,6 +89,7 @@ import com.example.ui.components.bounceClick
 import com.example.ui.components.floatingShadow
 import com.example.ui.components.rememberHaptics
 import com.example.ui.theme.Darkroom
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
@@ -84,7 +99,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
+
+private val TILE_CORNER = 8.dp
 
 internal val SPANISH = Locale.forLanguageTag("es-ES")
 
@@ -101,6 +119,7 @@ class ViewerActions(
  * "La mesa": the photo lies on a table lit by its own color. Swipe sideways or scrub the magnifying film
  * strip to move; swipe up and the photo lifts into a card to read its details; swipe down to put it back.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun Viewer(
     items: List<MediaItem>,
@@ -155,31 +174,49 @@ fun Viewer(
         snapshotFlow { pager.currentPage }.drop(1).collect { haptics.page() }
     }
 
+    /** Puts the current photo's tile in view; its position only exists once the grid has laid out again. */
+    suspend fun aimAtTile() {
+        val id = items.getOrNull(pager.currentPage)?.id ?: return
+        onRevealInGrid(id)
+        withFrameNanos { }
+        withFrameNanos { }
+        origin = originOf(id)
+    }
+
     fun close() {
         if (closing) return
         closing = true
         haptics.close()
         scope.launch {
-            val id = items.getOrNull(pager.currentPage)?.id
-            if (id != null) {
-                onRevealInGrid(id)
-                origin = originOf(id)
-            }
+            aimAtTile()
             coroutineScope {
                 launch { reveal.animateTo(0f, tween(160)) }
                 launch { dismiss.animateTo(0f, spring(dampingRatio = 1f, stiffness = 500f)) }
-                launch { open.animateTo(0f, spring(dampingRatio = 1f, stiffness = 520f)) }
+                launch { open.animateTo(0f, spring(dampingRatio = 1f, stiffness = 480f, visibilityThreshold = 0.002f)) }
             }
+            haptics.tick()
             onClose()
         }
     }
 
     LaunchedEffect(items.isEmpty()) { if (items.isEmpty()) onClose() }
 
-    BackHandler {
-        when {
-            revealed -> scope.launch { reveal.animateTo(0f, spring(dampingRatio = 0.86f, stiffness = 420f)) }
-            else -> close()
+    // The system back gesture drives the flight live: the photo follows the finger towards its tile.
+    PredictiveBackHandler(enabled = !closing) { progress ->
+        val fromDetails = reveal.value > 0.5f
+        try {
+            if (!fromDetails) aimAtTile()
+            progress.collect { event ->
+                if (fromDetails) reveal.snapTo(1f - event.progress)
+                else open.snapTo(1f - 0.35f * event.progress)
+            }
+            if (fromDetails) reveal.animateTo(0f, spring(dampingRatio = 0.86f, stiffness = 420f)) else close()
+        } catch (e: CancellationException) {
+            scope.launch {
+                if (fromDetails) reveal.animateTo(1f, spring(dampingRatio = 0.84f, stiffness = 380f))
+                else open.animateTo(1f, spring(dampingRatio = 0.86f, stiffness = 420f))
+            }
+            throw e
         }
     }
 
@@ -189,7 +226,7 @@ fun Viewer(
         snapshotFlow { pager.settledPage }.collectLatest { page ->
             val item = items.getOrNull(page) ?: return@collectLatest
             val argb = Thumbnails.ambientColor(context, item)
-            val target = if (argb != null) lerp(Color(argb), Color.Black, 0.55f) else Color.Black
+            val target = if (argb != null) lerpColor(Color(argb), Color.Black, 0.55f) else Color.Black
             ambient.animateTo(target, tween(420))
         }
     }
@@ -225,31 +262,50 @@ fun Viewer(
             state = pager,
             key = { items[it].id },
             beyondViewportPageCount = 1,
-            userScrollEnabled = !zoomed && !revealed,
+            userScrollEnabled = !zoomed && !revealed && !closing,
             pageSpacing = 12.dp,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    val o = open.value
+                    val o = open.value.coerceIn(0f, 1f)
                     val r = reveal.value
                     val dragged = abs(dismiss.value) / hPx
-                    val rect = origin
-                    // Fly from (and back to) the tile the photo lives in.
-                    val fromScale = if (rect != null) (rect.width / wPx).coerceIn(0.1f, 1f) else 0.86f
-                    val flyScale = fromScale + (1f - fromScale) * o
-                    val flyX = if (rect != null) (rect.center.x - wPx / 2f) * (1f - o) else 0f
-                    val flyY = if (rect != null) (rect.center.y - hPx / 2f) * (1f - o) else 0f
-
-                    val liftScale = 1f - 0.46f * r
-                    val s = flyScale * liftScale * (1f - 0.22f * min(1f, dragged * 2f))
+                    val flying = origin != null
+                    val noTile = if (flying) 1f else 0.86f + 0.14f * o
+                    val s = noTile * (1f - 0.46f * r) * (1f - 0.22f * min(1f, dragged * 2f))
                     scaleX = s
                     scaleY = s
-                    translationX = flyX
-                    translationY = flyY + dismiss.value - r * hPx * 0.26f
+                    translationY = dismiss.value - r * hPx * 0.26f
                     transformOrigin = TransformOrigin.Center
-                    alpha = if (rect == null) o.coerceIn(0f, 1f) else 1f
-                    shape = RoundedCornerShape((28.dp.toPx() * maxOf(r, 1f - o, min(1f, dragged * 6f))))
-                    clip = r > 0f || o < 1f || dismiss.value != 0f
+                    alpha = if (flying) 1f else o
+                    shape = RoundedCornerShape(28.dp.toPx() * maxOf(r, min(1f, dragged * 6f)))
+                    clip = r > 0f || dismiss.value != 0f
+                }
+                // Flies between the tile and the screen. The photo's fitted rectangle morphs into the tile while
+                // the image scales to cover it, so the last frame is exactly what the grid shows.
+                .drawWithContent {
+                    val rect = origin
+                    val p = open.value.coerceIn(0f, 1f)
+                    if (rect == null || p >= 1f) {
+                        drawContent()
+                        return@drawWithContent
+                    }
+                    val aspect = items.getOrNull(pager.currentPage)?.aspect ?: 1f
+                    val fit = if (aspect > wPx / hPx) Size(wPx, wPx / aspect) else Size(hPx * aspect, hPx)
+                    val fitted = Rect(Offset((wPx - fit.width) / 2f, (hPx - fit.height) / 2f), fit)
+                    val cover = max(rect.width / fit.width, rect.height / fit.height)
+                    val scale = cover + (1f - cover) * p
+                    val clipRect = lerp(rect, fitted, p)
+                    val corner = TILE_CORNER.toPx() * (1f - p)
+                    val hole = Path().apply {
+                        addRoundRect(RoundRect(clipRect, CornerRadius(corner)))
+                    }
+                    clipPath(hole) {
+                        withTransform({
+                            translate(clipRect.center.x - wPx / 2f, clipRect.center.y - hPx / 2f)
+                            scale(scale, scale, Offset(wPx / 2f, hPx / 2f))
+                        }) { this@drawWithContent.drawContent() }
+                    }
                 }
         ) { page ->
             val item = items[page]
@@ -349,7 +405,8 @@ fun Viewer(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .fillMaxWidth()
-                    .statusBarsPadding()
+                    // Ignores bar visibility: the controls must not jump when the bars hide and return.
+                    .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)
                     .padding(horizontal = 14.dp, vertical = 8.dp)
                     .graphicsLayer {
                         alpha = chromeLayer()
@@ -380,7 +437,7 @@ fun Viewer(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility)
                     .padding(bottom = 10.dp)
                     .graphicsLayer {
                         alpha = chromeLayer()

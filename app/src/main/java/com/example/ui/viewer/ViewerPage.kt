@@ -163,8 +163,10 @@ private fun PhotoPage(
     // Leaving a page always resets its zoom.
     LaunchedEffect(active) {
         if (!active && zoom.value != 1f) {
-            zoom.snapTo(1f); panX.snapTo(0f); panY.snapTo(0f)
             onZoomChanged(false)
+            launch { panX.animateTo(0f, spring(dampingRatio = 1f, stiffness = 700f)) }
+            launch { panY.animateTo(0f, spring(dampingRatio = 1f, stiffness = 700f)) }
+            zoom.animateTo(1f, spring(dampingRatio = 1f, stiffness = 700f))
         }
     }
 
@@ -209,6 +211,7 @@ private fun PhotoPage(
                 onTransform = { centroid, pan, factor ->
                     scope.launch {
                         val scale = (zoom.value * factor).coerceIn(0.85f, 8f)
+                        if (scale == 8f && zoom.value < 8f) haptics.threshold()
                         val center = Offset(boxW / 2f, boxH / 2f)
                         val applied = scale / zoom.value
                         // Keep the point under the fingers fixed.
@@ -224,6 +227,7 @@ private fun PhotoPage(
                 onTransformEnd = {
                     scope.launch {
                         if (zoom.value < 1f) {
+                            haptics.tick()
                             launch { zoom.animateTo(1f, spring(dampingRatio = 0.7f, stiffness = 500f)) }
                             launch { panX.animateTo(0f) }
                             launch { panY.animateTo(0f) }
@@ -308,9 +312,11 @@ private fun VideoPage(
     val updatedTap by rememberUpdatedState(onTap)
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(item.aspect.coerceAtLeast(0.2f))
+            Modifier.aspectRatio(
+                item.aspect.coerceAtLeast(0.2f),
+                // Fit on both axes, the same rectangle photos use, so the flight to the grid lines up.
+                matchHeightConstraintsFirst = item.aspect < 0.56f
+            )
         ) {
             if (player != null) {
                 AndroidView(
