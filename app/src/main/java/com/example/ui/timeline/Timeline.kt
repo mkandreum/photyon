@@ -391,18 +391,9 @@ private fun Tile(
             .clickable(onClickLabel = "Abrir") { onTap(item) }
     ) {
         val inset = if (isSelected) 0.88f else 1f
-        val rotated = item.rotation != 0f
         val imageModifier = Modifier
             .fillMaxSize()
-            .then(
-                if (isSelected || rotated) {
-                    Modifier.graphicsLayer {
-                        scaleX = inset
-                        scaleY = inset
-                        rotationZ = item.rotation
-                    }
-                } else Modifier
-            )
+            .then(if (isSelected) Modifier.graphicsLayer { scaleX = inset; scaleY = inset } else Modifier)
         ThumbImage(item, 0, imageModifier)
         // Large mosaic tiles sharpen on top of the small thumbnail as soon as the bigger render arrives.
         if (widthFraction >= 0.5f) ThumbImage(item, if (widthFraction > 0.9f) 1280 else 768, imageModifier)

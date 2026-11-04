@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -76,6 +77,7 @@ import com.example.ui.components.rememberHaptics
 import com.example.ui.theme.Darkroom
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -92,7 +94,7 @@ class ViewerActions(
     val onTrash: (MediaItem) -> Unit,
     val onHideToggle: (MediaItem) -> Unit,
     val onAlbum: (MediaItem) -> Unit,
-    val onSaveAdjustments: (MediaItem, Adjustments) -> Unit
+    val onEdit: (MediaItem) -> Unit
 )
 
 /**
@@ -106,6 +108,7 @@ fun Viewer(
     originOf: (String) -> Rect?,
     onRevealInGrid: suspend (String) -> Unit,
     actions: ViewerActions,
+    suspended: Boolean,
     onClose: () -> Unit
 ) {
     val startIndex = remember { items.indexOfFirst { it.id == startId }.coerceAtLeast(0) }
@@ -121,8 +124,6 @@ fun Viewer(
     var origin by remember { mutableStateOf(originOf(startId)) }
     var chrome by remember { mutableStateOf(true) }
     var zoomed by remember { mutableStateOf(false) }
-    var adjusting by remember { mutableStateOf(false) }
-    var preview by remember { mutableStateOf<Adjustments?>(null) }
 
     val current = items.getOrNull(pager.currentPage.coerceAtMost(items.lastIndex))
     val revealed by remember { derivedStateOf { reveal.value > 0.5f } }
@@ -143,11 +144,18 @@ fun Viewer(
         }
     }
 
-    LaunchedEffect(Unit) { open.animateTo(1f, spring(dampingRatio = 0.86f, stiffness = 420f)) }
+    LaunchedEffect(Unit) {
+        haptics.open()
+        open.animateTo(1f, spring(dampingRatio = 0.86f, stiffness = 420f))
+    }
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.currentPage }.drop(1).collect { haptics.page() }
+    }
 
     fun close() {
         if (closing) return
         closing = true
+        haptics.close()
         scope.launch {
             val id = items.getOrNull(pager.currentPage)?.id
             if (id != null) {
@@ -243,10 +251,21 @@ fun Viewer(
         ) { page ->
             val item = items[page]
             val isCurrent = pager.settledPage == page
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // Depth while paging: the outgoing photo sinks, the incoming one rises from behind.
+                        val off = abs(pager.getOffsetDistanceInPages(page)).coerceIn(0f, 1f)
+                        val s = 1f - 0.1f * off
+                        scaleX = s
+                        scaleY = s
+                        alpha = 1f - 0.45f * off
+                    }
+            ) {
             ViewerPage(
                 item = item,
-                preview = preview.takeIf { isCurrent && adjusting },
-                active = isCurrent && !revealed && !closing && open.value > 0.9f,
+                active = isCurrent && !revealed && !closing && !suspended && open.value > 0.9f,
                 chromeVisible = chrome,
                 onZoomChanged = { if (isCurrent) zoomed = it },
                 onTap = {
@@ -256,9 +275,14 @@ fun Viewer(
                 onVerticalDrag = { dy ->
                     scope.launch {
                         if (reveal.value > 0f || (dy < 0f && dismiss.value == 0f)) {
-                            reveal.snapTo((reveal.value - dy / panelHeightPx).coerceIn(0f, 1f))
+                            val before = reveal.value
+                            reveal.snapTo((before - dy / panelHeightPx).coerceIn(0f, 1f))
+                            if ((before < 0.35f) != (reveal.value < 0.35f)) haptics.threshold()
                         } else {
-                            dismiss.snapTo(dismiss.value + dy)
+                            val limit = hPx * 0.14f
+                            val before = dismiss.value
+                            dismiss.snapTo(before + dy)
+                            if ((before > limit) != (dismiss.value > limit)) haptics.threshold()
                         }
                     }
                 },
@@ -271,13 +295,13 @@ fun Viewer(
                             }
                             reveal.value > 0f -> {
                                 val target = if (velocity < -600f || (velocity < 600f && reveal.value > 0.35f)) 1f else 0f
-                                if (target == 1f && reveal.value < 1f) haptics.tick()
                                 reveal.animateTo(target, spring(dampingRatio = 0.84f, stiffness = 380f))
                             }
                         }
                     }
                 }
             )
+            }
         }
 
         // Fades away as the photo lifts or is dragged.
@@ -285,6 +309,38 @@ fun Viewer(
         fun chromeLayer(): Float = chromeAlpha * (1f - reveal.value) * open.value * (1f - min(1f, abs(dismiss.value) / (hPx * 0.1f)))
 
         if (current != null) {
+            // Soft darkness behind the controls, so they read over any photo without a hard edge.
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(190.dp)
+                    .graphicsLayer { alpha = chromeLayer() }
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color(0xE6000000),
+                            0.45f to Color(0x8C000000),
+                            0.75f to Color(0x33000000),
+                            1f to Color.Transparent
+                        )
+                    )
+            )
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(320.dp)
+                    .graphicsLayer { alpha = chromeLayer() }
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.3f to Color(0x4D000000),
+                            0.6f to Color(0xA6000000),
+                            1f to Color(0xF2000000)
+                        )
+                    )
+            )
+
             // Top bar
             Row(
                 modifier = Modifier
@@ -292,7 +348,10 @@ fun Viewer(
                     .fillMaxWidth()
                     .statusBarsPadding()
                     .padding(horizontal = 14.dp, vertical = 8.dp)
-                    .graphicsLayer { alpha = chromeLayer() },
+                    .graphicsLayer {
+                        alpha = chromeLayer()
+                        translationY = -(1f - chromeAlpha) * 28.dp.toPx()
+                    },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -320,7 +379,10 @@ fun Viewer(
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .padding(bottom = 10.dp)
-                    .graphicsLayer { alpha = chromeLayer() },
+                    .graphicsLayer {
+                        alpha = chromeLayer()
+                        translationY = (1f - chromeAlpha) * 44.dp.toPx()
+                    },
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -328,8 +390,9 @@ fun Viewer(
                 ActionPill {
                     PillAction(Icons.Rounded.IosShare, "Compartir") { actions.onShare(current) }
                     FavoriteAction(current.isFavorite) { actions.onFavorite(current) }
-                    PillAction(Icons.Rounded.Tune, "Ajustar") { adjusting = true }
+                    PillAction(Icons.Rounded.Tune, "Editar") { actions.onEdit(current) }
                     PillAction(Icons.Outlined.Info, "Detalles") {
+                        haptics.threshold()
                         scope.launch { reveal.animateTo(1f, spring(dampingRatio = 0.84f, stiffness = 380f)) }
                     }
                     PillAction(Icons.Rounded.DeleteOutline, "Eliminar", tint = Darkroom.Danger) { actions.onTrash(current) }
@@ -359,18 +422,6 @@ fun Viewer(
         }
     }
 
-    if (adjusting && current != null) {
-        AdjustSheet(
-            item = current,
-            onChange = { preview = it },
-            onDismiss = { adjusting = false; preview = null },
-            onSave = {
-                actions.onSaveAdjustments(current, it)
-                adjusting = false
-                preview = null
-            }
-        )
-    }
 }
 
 internal fun sameDayOf(items: List<MediaItem>, item: MediaItem): List<MediaItem> {
@@ -427,7 +478,7 @@ private fun FavoriteAction(favorite: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(52.dp)
-            .bounceClick(pressedScale = 0.84f, feedback = { it.confirm() }, onClick = onClick),
+            .bounceClick(pressedScale = 0.84f, feedback = { it.pop() }, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(

@@ -79,6 +79,8 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.coil.gif)
   implementation(libs.media3.exoplayer)
+  implementation(libs.media3.transformer)
+  implementation(libs.media3.effect)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   testImplementation(libs.junit)

@@ -1,11 +1,15 @@
 package com.example.ui.components
 
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -29,10 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -106,11 +107,40 @@ fun Modifier.floatingShadow(shape: Shape = PillShape, elevation: Dp = 18.dp): Mo
 /* ---- Haptics ---- */
 
 class Haptics(private val view: View) {
+    private val vibrator: Vibrator? = view.context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+
+    private fun play(fallback: Int, vararg primitives: Pair<Int, Float>) {
+        val v = vibrator
+        val ids = primitives.map { it.first }.toIntArray()
+        if (v != null && view.isHapticFeedbackEnabled && v.areAllPrimitivesSupported(*ids)) {
+            val composition = VibrationEffect.startComposition()
+            primitives.forEach { (id, scale) -> composition.addPrimitive(id, scale) }
+            v.vibrate(composition.compose())
+        } else {
+            view.performHapticFeedback(fallback)
+        }
+    }
+
     fun tick() = view.performHapticFeedback(HapticFeedbackConstants.SEGMENT_FREQUENT_TICK)
     fun press() = view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     fun confirm() = view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
     fun reject() = view.performHapticFeedback(HapticFeedbackConstants.REJECT)
     fun longPress() = view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+
+    /** A photo lifting towards you. */
+    fun open() = play(HapticFeedbackConstants.GESTURE_START, VibrationEffect.Composition.PRIMITIVE_QUICK_RISE to 0.7f, VibrationEffect.Composition.PRIMITIVE_CLICK to 0.5f)
+
+    /** A photo settling back. */
+    fun close() = play(HapticFeedbackConstants.GESTURE_END, VibrationEffect.Composition.PRIMITIVE_QUICK_FALL to 0.7f)
+
+    /** Moving on to the next photo. */
+    fun page() = play(HapticFeedbackConstants.SEGMENT_TICK, VibrationEffect.Composition.PRIMITIVE_TICK to 0.8f)
+
+    /** Dragged past the point where letting go commits. */
+    fun threshold() = play(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE, VibrationEffect.Composition.PRIMITIVE_THUD to 0.6f)
+
+    /** A soft landing: favorites, zoom in. */
+    fun pop() = play(HapticFeedbackConstants.CONFIRM, VibrationEffect.Composition.PRIMITIVE_SPIN to 0.5f)
 }
 
 @Composable
@@ -260,7 +290,7 @@ fun Wordmark(modifier: Modifier = Modifier) {
 
 data class NavItem(val route: String, val label: String, val icon: ImageVector)
 
-/** Floating bar: every tab keeps its name, and a leak of safelight marks the active one. */
+/** Floating pill: the active tab opens up with its name on a flat wash of safelight. */
 @Composable
 fun FloatingNav(
     items: List<NavItem>,
@@ -271,21 +301,21 @@ fun FloatingNav(
     onPrimary: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val shape = RoundedCornerShape(22.dp)
     Row(
         modifier = modifier
-            .floatingShadow(shape, 24.dp)
-            .clip(shape)
+            .floatingShadow(PillShape, 24.dp)
+            .clip(PillShape)
             .background(Darkroom.Nav)
-            .padding(horizontal = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         items.forEach { item ->
             NavButton(item, selected = item.route == current, onClick = { onSelect(item.route) })
         }
         Box(
             modifier = Modifier
-                .padding(start = 6.dp, end = 2.dp)
+                .padding(start = 4.dp)
                 .size(52.dp)
                 .bounceClick(pressedScale = 0.85f, onClick = onPrimary)
                 .clip(Aperture)
@@ -302,40 +332,27 @@ private fun NavButton(item: NavItem, selected: Boolean, onClick: () -> Unit) {
     val tint by animateColorAsState(if (selected) Darkroom.Ink else Darkroom.Muted, label = "navTint")
     val light by animateFloatAsState(
         if (selected) 1f else 0f,
-        spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium),
+        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMedium),
         label = "navLight"
     )
-    Box(
+    Row(
         modifier = Modifier
-            .size(width = 72.dp, height = 64.dp)
+            .height(52.dp)
             .bounceClick(pressedScale = 0.9f, feedback = { it.tick() }, onClick = onClick)
-            .drawBehind {
-                if (light > 0f) {
-                    // The leak: a bright sliver at the top edge bleeding down into the bar.
-                    val w = size.width * 0.62f * light
-                    val x = (size.width - w) / 2f
-                    drawRect(
-                        Brush.verticalGradient(
-                            0f to Darkroom.Accent.copy(alpha = 0.28f * light),
-                            1f to Color.Transparent,
-                            endY = size.height * 0.7f
-                        ),
-                        topLeft = Offset(x, 0f),
-                        size = Size(w, size.height * 0.7f)
-                    )
-                    drawRect(Darkroom.Accent, topLeft = Offset(x, 0f), size = Size(w, 2.5.dp.toPx()))
-                }
-            },
-        contentAlignment = Alignment.Center
+            .clip(PillShape)
+            .drawBehind { if (light > 0f) drawRect(Darkroom.Accent.copy(alpha = 0.22f * light)) }
+            .animateContentSize(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow))
+            .padding(horizontal = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(item.icon, item.label, tint = tint, modifier = Modifier.size(22.dp))
+        Icon(item.icon, item.label, tint = tint, modifier = Modifier.size(23.dp))
+        if (selected) {
             Text(
-                item.label.uppercase(),
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, letterSpacing = 0.6.sp),
+                item.label,
+                style = MaterialTheme.typography.labelLarge,
                 color = tint,
                 maxLines = 1,
-                modifier = Modifier.padding(top = 3.dp)
+                modifier = Modifier.padding(start = 6.dp)
             )
         }
     }

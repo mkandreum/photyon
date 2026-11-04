@@ -28,20 +28,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CollectionsBookmark
-import androidx.compose.material.icons.rounded.RotateRight
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,10 +47,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.example.data.MediaItem
-import com.example.ui.components.PrimaryButton
 import com.example.ui.components.SheetShape
 import com.example.ui.components.SoftButton
-import com.example.ui.components.rememberHaptics
 import com.example.ui.theme.Darkroom
 import com.example.ui.timeline.ThumbImage
 import kotlinx.coroutines.flow.collectLatest
@@ -77,7 +69,6 @@ private val CELL_GAP = 3.dp
 @Composable
 internal fun FilmStrip(items: List<MediaItem>, pager: PagerState, enabled: Boolean) {
     val strip = rememberLazyListState(initialFirstVisibleItemIndex = pager.currentPage)
-    val haptics = rememberHaptics()
     val dragged by strip.interactionSource.collectIsDraggedAsState()
     val fling = rememberSnapFlingBehavior(strip, SnapPosition.Center)
 
@@ -97,7 +88,6 @@ internal fun FilmStrip(items: List<MediaItem>, pager: PagerState, enabled: Boole
     LaunchedEffect(Unit) {
         snapshotFlow { centered }.distinctUntilChanged().collectLatest { index ->
             if (userDriving && index != pager.currentPage && index < pager.pageCount) {
-                haptics.tick()
                 pager.scrollToPage(index)
             }
         }
@@ -252,71 +242,4 @@ private fun Fact(text: String) {
             .background(Darkroom.Raised)
             .padding(horizontal = 10.dp, vertical = 6.dp)
     )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun AdjustSheet(
-    item: MediaItem,
-    onChange: (Adjustments) -> Unit,
-    onDismiss: () -> Unit,
-    onSave: (Adjustments) -> Unit
-) {
-    var rotation by remember(item.id) { mutableFloatStateOf(item.rotation) }
-    var brightness by remember(item.id) { mutableFloatStateOf(item.brightness) }
-    var contrast by remember(item.id) { mutableFloatStateOf(item.contrast) }
-    var saturation by remember(item.id) { mutableFloatStateOf(item.saturation) }
-    fun now() = Adjustments(rotation, brightness, contrast, saturation)
-    LaunchedEffect(rotation, brightness, contrast, saturation) { onChange(now()) }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Darkroom.Sheet,
-        scrimColor = androidx.compose.ui.graphics.Color.Transparent,
-        shape = SheetShape
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text("Ajustar", style = MaterialTheme.typography.headlineSmall, color = Darkroom.Ink)
-            Text(
-                "No modifica el archivo original.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Darkroom.Muted
-            )
-            AdjustSlider("Brillo", brightness, -0.4f..0.4f) { brightness = it }
-            AdjustSlider("Contraste", contrast, 0.6f..1.6f) { contrast = it }
-            AdjustSlider("Saturación", saturation, 0f..2f) { saturation = it }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
-                SoftButton("Girar", { rotation = (rotation + 90f) % 360f }, Modifier.weight(1f), Icons.Rounded.RotateRight)
-                SoftButton(
-                    "Original",
-                    { rotation = 0f; brightness = 0f; contrast = 1f; saturation = 1f },
-                    Modifier.weight(1f)
-                )
-            }
-            PrimaryButton("Guardar", { onSave(now()) }, Modifier.padding(top = 8.dp))
-        }
-    }
-}
-
-@Composable
-private fun AdjustSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onValue: (Float) -> Unit) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = Darkroom.Muted)
-        Slider(
-            value = value,
-            onValueChange = onValue,
-            valueRange = range,
-            colors = SliderDefaults.colors(
-                thumbColor = Darkroom.Accent,
-                activeTrackColor = Darkroom.Accent,
-                inactiveTrackColor = Darkroom.Hairline
-            )
-        )
-    }
 }

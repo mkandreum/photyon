@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -56,7 +58,9 @@ import androidx.compose.ui.unit.dp
 import com.example.data.Album
 import com.example.data.Library
 import com.example.data.MediaItem
-import com.example.data.Memory
+import com.example.data.YearStat
+import com.example.data.dateLabel
+import com.example.ui.stories.StoriesRow
 import com.example.ui.components.CardShape
 import com.example.ui.components.ChoiceChip
 import com.example.ui.components.ApertureButton
@@ -66,6 +70,8 @@ import com.example.ui.components.SheetShape
 import com.example.ui.components.SoftButton
 import com.example.ui.components.Wordmark
 import com.example.ui.components.bounceClick
+import com.example.data.MONTHS_ES
+import com.example.ui.theme.DayNumeralStyle
 import com.example.ui.theme.Darkroom
 import com.example.ui.timeline.Density
 import com.example.ui.timeline.ThumbImage
@@ -79,7 +85,8 @@ fun HomeHero(
     library: Library,
     density: Density,
     onDensity: (Density) -> Unit,
-    onOpenMemory: (Memory) -> Unit,
+    seenStories: Set<String>,
+    onOpenStory: (Int) -> Unit,
     partialAccess: Boolean,
     onManageAccess: () -> Unit
 ) {
@@ -122,43 +129,8 @@ fun HomeHero(
                 SoftButton("Gestionar", onManageAccess)
             }
         }
-        if (library.memories.isNotEmpty() && density == Density.Moments) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(library.memories, key = { it.yearsAgo }) { memory ->
-                    MemoryCard(memory) { onOpenMemory(memory) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MemoryCard(memory: Memory, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(148.dp, 196.dp)
-            .bounceClick(pressedScale = 0.96f, onClick = onClick)
-            .clip(CardShape)
-            .background(Darkroom.Raised)
-    ) {
-        ThumbImage(memory.items.first(), 768, Modifier.fillMaxSize())
-        Box(
-            Modifier
-                .align(Alignment.BottomStart)
-                .padding(8.dp)
-                .clip(PillShape)
-                .background(Darkroom.Accent)
-                .padding(horizontal = 10.dp, vertical = 4.dp)
-        ) {
-            Text(
-                if (memory.yearsAgo == 1) "HACE 1 AÑO" else "HACE ${memory.yearsAgo} AÑOS",
-                style = MaterialTheme.typography.labelSmall,
-                color = Darkroom.OnAccent,
-                maxLines = 1
-            )
+        if (library.stories.isNotEmpty() && density == Density.Moments) {
+            StoriesRow(library.stories, seenStories, onOpenStory)
         }
     }
 }
@@ -265,6 +237,188 @@ private fun AlbumStack(album: Album, onClick: () -> Unit) {
     }
 }
 
+/* ---- Hidden albums (behind the fingerprint) ---- */
+
+@Composable
+fun HiddenScreen(
+    library: Library,
+    onOpenAll: () -> Unit,
+    onOpenAlbum: (Album) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = modifier
+            .fillMaxSize()
+            .background(Darkroom.Canvas),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }, contentType = "title") {
+            Row(
+                Modifier
+                    .statusBarsPadding()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ApertureButton(Icons.Rounded.Close, "Cerrar", onBack, size = 44.dp)
+                Column {
+                    Text("Oculto", style = MaterialTheme.typography.headlineMedium, color = Darkroom.Ink)
+                    Text("${library.hidden.size} ELEMENTOS · SE BLOQUEA AL SALIR", style = MaterialTheme.typography.labelSmall, color = Darkroom.Muted)
+                }
+            }
+        }
+        if (library.hidden.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }, contentType = "empty") {
+                EmptyHint("Mantén pulsada una foto, márcala y elige Ocultar, o crea un álbum oculto desde Añadir a álbum.")
+            }
+        } else {
+            item(span = { GridItemSpan(maxLineSpan) }, contentType = "all") {
+                SoftButton("Ver todo", onOpenAll, Modifier.fillMaxWidth())
+            }
+            items(library.hiddenAlbums, key = { it.id }, contentType = { "album" }) { album ->
+                AlbumStack(album) { onOpenAlbum(album) }
+            }
+        }
+    }
+}
+
+/* ---- Recuerdos: stories and your life in numbers ---- */
+
+@Composable
+fun MemoriesScreen(
+    library: Library,
+    seenStories: Set<String>,
+    onOpenStory: (Int) -> Unit,
+    onOpenYear: (YearStat) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val maxPerYear = remember(library.years) { library.years.maxOfOrNull { it.items.size }?.coerceAtLeast(1) ?: 1 }
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Darkroom.Canvas),
+        contentPadding = PaddingValues(bottom = 120.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item(contentType = "title") {
+            Column(
+                Modifier
+                    .statusBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 12.dp)
+            ) {
+                Text("Recuerdos", style = MaterialTheme.typography.headlineMedium, color = Darkroom.Ink)
+                Text("TU VIDA EN FOTOS", style = MaterialTheme.typography.labelMedium, color = Darkroom.Muted)
+            }
+        }
+        if (library.stories.isNotEmpty()) {
+            item(contentType = "stories") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(library.stories.size, key = { library.stories[it].id }) { i ->
+                        val story = library.stories[i]
+                        Box(
+                            Modifier
+                                .size(156.dp, 232.dp)
+                                .bounceClick(pressedScale = 0.96f) { onOpenStory(i) }
+                                .clip(CardShape)
+                                .background(Darkroom.Raised)
+                        ) {
+                            ThumbImage(story.items.first(), 768, Modifier.fillMaxSize())
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                                            0.5f to androidx.compose.ui.graphics.Color.Transparent,
+                                            1f to androidx.compose.ui.graphics.Color(0xD9000000)
+                                        )
+                                    )
+                            )
+                            Column(Modifier.align(Alignment.BottomStart).padding(12.dp)) {
+                                Text(story.title, style = MaterialTheme.typography.titleMedium, color = androidx.compose.ui.graphics.Color.White, maxLines = 1)
+                                Text(story.dateLabel(), style = MaterialTheme.typography.labelSmall, color = Darkroom.Accent, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        library.busiestDay?.let { day ->
+            item(contentType = "stat") {
+                Row(
+                    Modifier
+                        .padding(horizontal = 16.dp)
+                        .fillMaxWidth()
+                        .clip(CardShape)
+                        .background(Darkroom.Raised)
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Text("${day.count}", style = DayNumeralStyle, color = Darkroom.Accent, maxLines = 1)
+                    Column {
+                        Text("Tu día con más fotos", style = MaterialTheme.typography.titleSmall, color = Darkroom.Ink)
+                        Text(
+                            "${day.date.dayOfMonth} ${MONTHS_ES[day.date.monthValue - 1]} ${day.date.year}".uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Darkroom.Muted
+                        )
+                    }
+                }
+            }
+        }
+        item(contentType = "yearsTitle") {
+            Text("Año a año", style = MaterialTheme.typography.titleLarge, color = Darkroom.Ink, modifier = Modifier.padding(horizontal = 16.dp))
+        }
+        items(library.years, key = { it.year }, contentType = { "year" }) { year ->
+            Row(
+                Modifier
+                    .padding(horizontal = 16.dp)
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .bounceClick(pressedScale = 0.98f) { onOpenYear(year) },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Darkroom.Raised)
+                ) { ThumbImage(year.items.first(), 0, Modifier.fillMaxSize()) }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("${year.year}", style = MaterialTheme.typography.titleSmall, color = Darkroom.Ink)
+                        Text("${year.items.size}", style = MaterialTheme.typography.labelSmall, color = Darkroom.Muted)
+                    }
+                    val share = year.items.size.toFloat() / maxPerYear
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(PillShape)
+                            .background(Darkroom.Hairline)
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(share)
+                                .fillMaxHeight()
+                                .clip(PillShape)
+                                .background(Darkroom.Accent)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* ---- Collection (any album-like list) ---- */
 
 @Composable
@@ -278,7 +432,8 @@ fun CollectionScreen(
     onSelection: (Set<String>) -> Unit,
     onOpen: (MediaItem) -> Unit,
     onBack: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    action: (@Composable () -> Unit)? = null
 ) {
     Box(
         modifier
@@ -308,6 +463,7 @@ fun CollectionScreen(
                         Text(title, style = MaterialTheme.typography.titleLarge, color = Darkroom.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${items.size} ELEMENTOS", style = MaterialTheme.typography.labelMedium, color = Darkroom.Muted)
                     }
+                    action?.invoke()
                 }
             }
         )
@@ -445,11 +601,12 @@ fun EmptyHint(text: String, modifier: Modifier = Modifier) {
 @Composable
 fun AlbumPickerSheet(
     existing: List<String>,
-    onPick: (String) -> Unit,
+    onPick: (String, Boolean) -> Unit,
     onRemove: (() -> Unit)?,
     onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf("") }
+    var hidden by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Darkroom.Sheet, shape = SheetShape) {
         Column(
             Modifier
@@ -461,7 +618,7 @@ fun AlbumPickerSheet(
             Text("Añadir a álbum", style = MaterialTheme.typography.headlineSmall, color = Darkroom.Ink)
             if (existing.isNotEmpty()) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(existing, key = { it }) { ChoiceChip(it, false, { onPick(it) }) }
+                    items(existing, key = { it }) { ChoiceChip(it, false, { onPick(it, false) }) }
                 }
             }
             Box(
@@ -481,9 +638,25 @@ fun AlbumPickerSheet(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .bounceClick(pressedScale = 0.98f, feedback = { it.tick() }) { hidden = !hidden }
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (hidden) Darkroom.AccentSoft else Darkroom.Raised)
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(Icons.Rounded.Lock, null, tint = if (hidden) Darkroom.Accent else Darkroom.Muted, modifier = Modifier.size(20.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Álbum oculto", style = MaterialTheme.typography.titleSmall, color = Darkroom.Ink)
+                    Text("Solo se abre con tu huella", style = MaterialTheme.typography.bodySmall, color = Darkroom.Muted)
+                }
+            }
             PrimaryButton(
                 "Crear y añadir",
-                { onPick(name.trim()) },
+                { onPick(name.trim(), hidden) },
                 enabled = name.isNotBlank(),
                 leadingIcon = Icons.Rounded.Add
             )

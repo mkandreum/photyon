@@ -160,11 +160,6 @@ class GalleryRepository(
 
     suspend fun setAlbum(ids: Collection<String>, album: String?) = edit(ids) { it.copy(customAlbum = album) }
 
-    suspend fun setAdjustments(id: String, rotation: Float, brightness: Float, contrast: Float, saturation: Float) =
-        edit(listOf(id)) {
-            it.copy(rotation = rotation, brightness = brightness, contrast = contrast, saturation = saturation)
-        }
-
     private companion object {
         const val FIRST_PAGE = 120
     }

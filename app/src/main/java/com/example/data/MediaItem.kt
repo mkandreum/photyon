@@ -23,11 +23,7 @@ data class MediaItem(
     val bucketName: String = "",
     val isFavorite: Boolean = false,
     val isHidden: Boolean = false,
-    val album: String? = null,
-    val rotation: Float = 0f,
-    val brightness: Float = 0f,
-    val contrast: Float = 1f,
-    val saturation: Float = 1f
+    val album: String? = null
 ) {
     val uri: Uri
         get() = ContentUris.withAppendedId(
@@ -35,15 +31,8 @@ data class MediaItem(
             mediaId
         )
 
-    /** Width / height after applying the user's rotation; 1 when unknown. */
     val aspect: Float
-        get() {
-            if (width <= 0 || height <= 0) return 1f
-            val quarterTurned = ((rotation / 90f).toInt() % 2) != 0
-            return if (quarterTurned) height.toFloat() / width else width.toFloat() / height
-        }
-
-    val hasColorEdits: Boolean get() = brightness != 0f || contrast != 1f || saturation != 1f
+        get() = if (width > 0 && height > 0) width.toFloat() / height else 1f
 
     val durationLabel: String
         get() {

@@ -123,7 +123,23 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun saveAdjustments(id: String, rotation: Float, brightness: Float, contrast: Float, saturation: Float) {
-        viewModelScope.launch { repository.setAdjustments(id, rotation, brightness, contrast, saturation) }
+    /** Moves photos into a hidden album, which only shows inside Oculto. */
+    fun addToHiddenAlbum(ids: Collection<String>, album: String) {
+        val copy = ids.toList()
+        viewModelScope.launch {
+            repository.setAlbum(copy, album)
+            repository.setHidden(copy, true)
+            _notice.value = Notice("En el álbum oculto $album")
+        }
+    }
+
+    private val seenKey get() = "seen_${java.time.LocalDate.now().toEpochDay()}"
+    private val _seenStories = MutableStateFlow(prefs.getStringSet(seenKey, emptySet()).orEmpty().toSet())
+    val seenStories: StateFlow<Set<String>> = _seenStories.asStateFlow()
+
+    fun markStorySeen(id: String) {
+        if (id in _seenStories.value) return
+        _seenStories.value = _seenStories.value + id
+        prefs.edit().putStringSet(seenKey, _seenStories.value).apply()
     }
 }

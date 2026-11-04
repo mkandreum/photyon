@@ -2,7 +2,10 @@ package com.example.ui
 
 import android.Manifest
 import android.app.Activity
-import android.app.KeyguardManager
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
+import android.os.CancellationSignal
+import android.view.WindowManager
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -29,6 +32,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -36,7 +43,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -63,6 +72,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -79,7 +90,10 @@ import com.example.data.Album
 import com.example.data.Library
 import com.example.data.MediaItem
 import com.example.data.Thumbnails
+import com.example.ui.components.ApertureButton
 import com.example.ui.components.FloatingNav
+import com.example.ui.editor.Editor
+import com.example.ui.stories.StoryPlayer
 import com.example.ui.components.NavItem
 import com.example.ui.components.PillShape
 import com.example.ui.components.bounceClick
@@ -120,6 +134,8 @@ private sealed interface Source {
     data object Search : Source
     data class AlbumRef(val id: String) : Source
     data class MemoryRef(val yearsAgo: Int) : Source
+    data class YearRef(val year: Int) : Source
+    data class HiddenAlbum(val id: String) : Source
 }
 
 private fun Library.itemsOf(source: Source, search: List<MediaItem>): List<MediaItem> = when (source) {
@@ -130,6 +146,8 @@ private fun Library.itemsOf(source: Source, search: List<MediaItem>): List<Media
     Source.Search -> search
     is Source.AlbumRef -> albums.firstOrNull { it.id == source.id }?.items.orEmpty()
     is Source.MemoryRef -> memories.firstOrNull { it.yearsAgo == source.yearsAgo }?.items.orEmpty()
+    is Source.YearRef -> years.firstOrNull { it.year == source.year }?.items.orEmpty()
+    is Source.HiddenAlbum -> hiddenAlbums.firstOrNull { it.id == source.id }?.items.orEmpty()
 }
 
 private fun Library.titleOf(source: Source): String = when (source) {
@@ -138,6 +156,8 @@ private fun Library.titleOf(source: Source): String = when (source) {
     Source.Hidden -> "Oculto"
     is Source.AlbumRef -> albums.firstOrNull { it.id == source.id }?.name ?: "Álbum"
     is Source.MemoryRef -> if (source.yearsAgo == 1) "Hace 1 año" else "Hace ${source.yearsAgo} años"
+    is Source.YearRef -> source.year.toString()
+    is Source.HiddenAlbum -> hiddenAlbums.firstOrNull { it.id == source.id }?.name ?: "Oculto"
     else -> ""
 }
 
@@ -194,8 +214,12 @@ fun AppRoot(viewModel: GalleryViewModel) {
     var collection by remember { mutableStateOf<Source?>(null) }
     var viewer by remember { mutableStateOf<ViewerRequest?>(null) }
     var hiddenUnlocked by remember { mutableStateOf(false) }
+    var hiddenHome by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<MediaItem?>(null) }
+    var storyAt by remember { mutableStateOf<Int?>(null) }
     var albumFor by remember { mutableStateOf<List<String>?>(null) }
 
+    val seenStories by viewModel.seenStories.collectAsStateWithLifecycle()
     val mainState = rememberTimelineState()
     val searchState = rememberTimelineState()
     val collectionState = remember(collection) { TimelineState(androidx.compose.foundation.lazy.LazyListState()) }
@@ -212,22 +236,55 @@ fun AppRoot(viewModel: GalleryViewModel) {
         trashLauncher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
     }
 
-    val lockLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            hiddenUnlocked = true
-            collection = Source.Hidden
-        }
-    }
     fun openHidden() {
         if (hiddenUnlocked) {
-            collection = Source.Hidden
+            hiddenHome = true
             return
         }
-        val keyguard = context.getSystemService(KeyguardManager::class.java)
-        @Suppress("DEPRECATION")
-        val intent = keyguard?.createConfirmDeviceCredentialIntent("Oculto", "Desbloquea para ver tus fotos ocultas")
-        if (intent != null) lockLauncher.launch(intent)
-        else viewModel.showNotice("Configura un bloqueo de pantalla para proteger Oculto")
+        val activity = context as? Activity ?: return
+        val strongOrLock = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val manager = context.getSystemService(BiometricManager::class.java)
+        if (manager?.canAuthenticate(strongOrLock) != BiometricManager.BIOMETRIC_SUCCESS) {
+            viewModel.showNotice("Activa la huella o un bloqueo de pantalla para usar Oculto")
+            return
+        }
+        BiometricPrompt.Builder(activity)
+            .setTitle("Oculto")
+            .setSubtitle("Usa tu huella para entrar")
+            .setAllowedAuthenticators(strongOrLock)
+            .build()
+            .authenticate(
+                CancellationSignal(),
+                activity.mainExecutor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        hiddenUnlocked = true
+                        hiddenHome = true
+                    }
+                }
+            )
+    }
+
+    val isHiddenSource: (Source?) -> Boolean = { it == Source.Hidden || it is Source.HiddenAlbum }
+    val showingHidden = hiddenHome || isHiddenSource(collection) || isHiddenSource(viewer?.source)
+
+    // Hidden content locks again as soon as the app leaves the screen, and never shows in recents or screenshots.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                hiddenUnlocked = false
+                hiddenHome = false
+                if (isHiddenSource(collection)) collection = null
+                if (isHiddenSource(viewer?.source)) viewer = null
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    DisposableEffect(showingHidden) {
+        val window = (context as? Activity)?.window
+        if (showingHidden) window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
     }
 
     val activeSource = collection ?: if (tab == TAB_SEARCH) Source.Search else Source.Timeline
@@ -243,7 +300,8 @@ fun AppRoot(viewModel: GalleryViewModel) {
 
     BackHandler(enabled = selected.isNotEmpty()) { viewModel.clearSelection() }
     BackHandler(enabled = selected.isEmpty() && viewer == null && collection != null) { collection = null }
-    BackHandler(enabled = selected.isEmpty() && viewer == null && collection == null && tab != TAB_PHOTOS) { tab = TAB_PHOTOS }
+    BackHandler(enabled = selected.isEmpty() && viewer == null && collection == null && hiddenHome) { hiddenHome = false }
+    BackHandler(enabled = selected.isEmpty() && viewer == null && collection == null && !hiddenHome && tab != TAB_PHOTOS) { tab = TAB_PHOTOS }
 
     // The nav slides away while reading downwards and returns on any upward scroll.
     var navShown by remember { mutableStateOf(true) }
@@ -277,7 +335,8 @@ fun AppRoot(viewModel: GalleryViewModel) {
                     library = library,
                     density = density,
                     onDensity = viewModel::setDensity,
-                    onOpenMemory = { collection = Source.MemoryRef(it.yearsAgo) },
+                    seenStories = seenStories,
+                    onOpenStory = { storyAt = it },
                     partialAccess = access == Access.Partial,
                     onManageAccess = { permissionLauncher.launch(MEDIA_PERMISSIONS) }
                 )
@@ -293,6 +352,14 @@ fun AppRoot(viewModel: GalleryViewModel) {
                 onOpenHidden = ::openHidden
             )
         }
+        Fading(tab == TAB_MEMORIES && collection == null) {
+            MemoriesScreen(
+                library = library,
+                seenStories = seenStories,
+                onOpenStory = { storyAt = it },
+                onOpenYear = { collection = Source.YearRef(it.year) }
+            )
+        }
         Fading(tab == TAB_SEARCH && collection == null) {
             SearchScreen(
                 query = query,
@@ -302,6 +369,15 @@ fun AppRoot(viewModel: GalleryViewModel) {
                 selected = selected,
                 onSelection = viewModel::setSelection,
                 onOpen = { openViewer(Source.Search, it) }
+            )
+        }
+
+        Fading(hiddenHome && collection == null) {
+            HiddenScreen(
+                library = library,
+                onOpenAll = { collection = Source.Hidden },
+                onOpenAlbum = { collection = Source.HiddenAlbum(it.id) },
+                onBack = { hiddenHome = false }
             )
         }
 
@@ -320,7 +396,21 @@ fun AppRoot(viewModel: GalleryViewModel) {
                     selected = selected,
                     onSelection = viewModel::setSelection,
                     onOpen = { openViewer(source, it) },
-                    onBack = { collection = null }
+                    onBack = { collection = null },
+                    action = {
+                        val listed = library.itemsOf(source, results)
+                        when (source) {
+                            is Source.AlbumRef -> ApertureButton(Icons.Rounded.VisibilityOff, "Ocultar este álbum", {
+                                viewModel.hide(listed.map { it.id })
+                                collection = null
+                            }, size = 44.dp)
+                            is Source.HiddenAlbum, Source.Hidden -> ApertureButton(Icons.Rounded.Visibility, "Volver a mostrar todo", {
+                                viewModel.unhide(listed.map { it.id })
+                                collection = null
+                            }, size = 44.dp)
+                            else -> Unit
+                        }
+                    }
                 )
             }
         }
@@ -331,7 +421,7 @@ fun AppRoot(viewModel: GalleryViewModel) {
             spring(dampingRatio = 0.9f, stiffness = 500f),
             label = "navOffset"
         )
-        val navVisible = collection == null && selected.isEmpty()
+        val navVisible = collection == null && !hiddenHome && selected.isEmpty()
         AnimatedVisibility(
             visible = navVisible,
             enter = fadeIn(tween(160)) + scaleIn(initialScale = 0.9f),
@@ -376,13 +466,23 @@ fun AppRoot(viewModel: GalleryViewModel) {
                     viewModel.clearSelection()
                 },
                 onAlbum = { albumFor = selected.toList() },
+                hiddenContext = isHiddenSource(activeSource),
                 onHide = {
-                    viewModel.hide(selected)
+                    if (isHiddenSource(activeSource)) viewModel.unhide(selected) else viewModel.hide(selected)
                     viewModel.clearSelection()
                 },
                 onTrash = { trash(selectionItems) }
             )
         }
+
+        // Keeps the clock and status icons readable over whatever scrolls beneath them.
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .windowInsetsTopHeight(WindowInsets.statusBars)
+                .background(Brush.verticalGradient(0f to Color(0xCC000000), 1f to Color(0x66000000)))
+        )
 
         PreloadPill(Modifier.align(Alignment.TopCenter))
 
@@ -402,12 +502,38 @@ fun AppRoot(viewModel: GalleryViewModel) {
                         if (it.isHidden) viewModel.unhide(listOf(it.id)) else viewModel.hide(listOf(it.id))
                     },
                     onAlbum = { albumFor = listOf(it.id) },
-                    onSaveAdjustments = { item, a ->
-                        viewModel.saveAdjustments(item.id, a.rotation, a.brightness, a.contrast, a.saturation)
-                    }
+                    onEdit = { editing = it }
                 ),
+                suspended = editing != null,
                 onClose = { viewer = null }
             )
+        }
+
+        editing?.let { item ->
+            Editor(
+                item = item,
+                onClose = { editing = null },
+                onSaved = {
+                    editing = null
+                    viewModel.showNotice("Copia guardada junto a la original")
+                },
+                onError = viewModel::showNotice
+            )
+        }
+
+        storyAt?.let { start ->
+            if (library.stories.isNotEmpty()) {
+                val favoriteIds = remember(library) { library.favorites.mapTo(HashSet()) { it.id } }
+                StoryPlayer(
+                    stories = library.stories,
+                    startStory = start,
+                    isFavorite = { it.id in favoriteIds },
+                    onFavorite = { viewModel.setFavorite(listOf(it.id), it.id !in favoriteIds) },
+                    onShare = { context.shareMedia(listOf(it)) },
+                    onSeen = { viewModel.markStorySeen(it.id) },
+                    onClose = { storyAt = null }
+                )
+            }
         }
 
         NoticeHost(notice, viewModel::dismissNotice, Modifier.align(Alignment.BottomCenter))
@@ -418,8 +544,8 @@ fun AppRoot(viewModel: GalleryViewModel) {
         val inAlbum = library.timeline.any { it.id in ids && it.album != null }
         AlbumPickerSheet(
             existing = custom,
-            onPick = {
-                viewModel.addToAlbum(ids, it)
+            onPick = { name, hidden ->
+                if (hidden) viewModel.addToHiddenAlbum(ids, name) else viewModel.addToAlbum(ids, name)
                 viewModel.clearSelection()
                 albumFor = null
             },
@@ -434,18 +560,24 @@ fun AppRoot(viewModel: GalleryViewModel) {
 }
 
 private const val TAB_PHOTOS = "photos"
+private const val TAB_MEMORIES = "memories"
 private const val TAB_ALBUMS = "albums"
 private const val TAB_SEARCH = "search"
 
 private val NAV_ITEMS = listOf(
     NavItem(TAB_PHOTOS, "Fotos", Icons.Rounded.PhotoLibrary),
+    NavItem(TAB_MEMORIES, "Recuerdos", Icons.Rounded.AutoAwesome),
     NavItem(TAB_ALBUMS, "Álbumes", Icons.Rounded.CollectionsBookmark),
     NavItem(TAB_SEARCH, "Buscar", Icons.Rounded.Search)
 )
 
 @Composable
 private fun Fading(visible: Boolean, content: @Composable () -> Unit) {
-    AnimatedVisibility(visible, enter = fadeIn(tween(180)), exit = fadeOut(tween(120))) { content() }
+    AnimatedVisibility(
+        visible,
+        enter = fadeIn(tween(200)) + scaleIn(spring(dampingRatio = 0.85f, stiffness = 500f), initialScale = 0.96f),
+        exit = fadeOut(tween(130)) + scaleOut(tween(130), targetScale = 0.98f)
+    ) { content() }
 }
 
 @Composable
@@ -455,6 +587,7 @@ private fun SelectionBar(
     onShare: () -> Unit,
     onFavorite: () -> Unit,
     onAlbum: () -> Unit,
+    hiddenContext: Boolean,
     onHide: () -> Unit,
     onTrash: () -> Unit
 ) {
@@ -482,13 +615,14 @@ private fun SelectionBar(
         BarAction(Icons.Rounded.IosShare, "Compartir", onClick = onShare)
         BarAction(Icons.Rounded.Favorite, "Favorita", onClick = onFavorite)
         BarAction(Icons.Rounded.CollectionsBookmark, "Añadir a álbum", onClick = onAlbum)
-        BarAction(Icons.Rounded.VisibilityOff, "Ocultar", onClick = onHide)
+        if (hiddenContext) BarAction(Icons.Rounded.Visibility, "Volver a mostrar", onClick = onHide)
+        else BarAction(Icons.Rounded.VisibilityOff, "Ocultar", onClick = onHide)
         BarAction(Icons.Rounded.DeleteOutline, "Eliminar", tint = Darkroom.Danger, onClick = onTrash)
     }
 }
 
 @Composable
-private fun BarAction(icon: ImageVector, label: String, tint: androidx.compose.ui.graphics.Color = Darkroom.Ink, onClick: () -> Unit) {
+private fun BarAction(icon: ImageVector, label: String, tint: Color = Darkroom.Ink, onClick: () -> Unit) {
     Box(
         Modifier
             .size(48.dp)

@@ -42,8 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -66,6 +64,7 @@ import com.example.data.MediaItem
 import com.example.data.Thumb
 import com.example.ui.components.Aperture
 import com.example.ui.components.bounceClick
+import com.example.ui.components.rememberHaptics
 import com.example.ui.theme.Darkroom
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -73,30 +72,9 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-data class Adjustments(val rotation: Float, val brightness: Float, val contrast: Float, val saturation: Float)
-
-/** Non-destructive color edits; the file on disk is never touched. */
-internal fun colorFilterOf(brightness: Float, contrast: Float, saturation: Float): ColorFilter? {
-    if (brightness == 0f && contrast == 1f && saturation == 1f) return null
-    val matrix = ColorMatrix().apply { setToSaturation(saturation) }
-    val b = brightness * 255f + (1f - contrast) * 127.5f
-    matrix.timesAssign(
-        ColorMatrix(
-            floatArrayOf(
-                contrast, 0f, 0f, 0f, b,
-                0f, contrast, 0f, 0f, b,
-                0f, 0f, contrast, 0f, b,
-                0f, 0f, 0f, 1f, 0f
-            )
-        )
-    )
-    return ColorFilter.colorMatrix(matrix)
-}
-
 @Composable
 internal fun ViewerPage(
     item: MediaItem,
-    preview: Adjustments?,
     active: Boolean,
     chromeVisible: Boolean,
     onZoomChanged: (Boolean) -> Unit,
@@ -107,7 +85,7 @@ internal fun ViewerPage(
     if (item.isVideo) {
         VideoPage(item, active, chromeVisible, onTap, onVerticalDrag, onVerticalEnd)
     } else {
-        PhotoPage(item, preview, active, onZoomChanged, onTap, onVerticalDrag, onVerticalEnd)
+        PhotoPage(item, active, onZoomChanged, onTap, onVerticalDrag, onVerticalEnd)
     }
 }
 
@@ -163,7 +141,6 @@ private fun Modifier.mediaGestures(
 @Composable
 private fun PhotoPage(
     item: MediaItem,
-    preview: Adjustments?,
     active: Boolean,
     onZoomChanged: (Boolean) -> Unit,
     onTap: () -> Unit,
@@ -178,6 +155,7 @@ private fun PhotoPage(
     var boxW by remember { mutableFloatStateOf(1f) }
     var boxH by remember { mutableFloatStateOf(1f) }
     val updatedTap by rememberUpdatedState(onTap)
+    val haptics = rememberHaptics()
 
     // Leaving a page always resets its zoom.
     LaunchedEffect(active) {
@@ -196,15 +174,6 @@ private fun PhotoPage(
             .placeholderMemoryCacheKey(Thumb(item).cacheKey)
             .build()
     }
-    val rotation = preview?.rotation ?: item.rotation
-    val filter = remember(preview, item.brightness, item.contrast, item.saturation) {
-        colorFilterOf(
-            preview?.brightness ?: item.brightness,
-            preview?.contrast ?: item.contrast,
-            preview?.saturation ?: item.saturation
-        )
-    }
-
     fun clampPan(x: Float, y: Float, scale: Float): Offset {
         val maxX = (boxW * (scale - 1f) / 2f).coerceAtLeast(0f)
         val maxY = (boxH * (scale - 1f) / 2f).coerceAtLeast(0f)
@@ -223,6 +192,7 @@ private fun PhotoPage(
                             val center = Offset(boxW / 2f, boxH / 2f)
                             val focus = clampPan((center.x - tap.x) * (target - 1f), (center.y - tap.y) * (target - 1f), target)
                             onZoomChanged(target > 1f)
+                            haptics.pop()
                             launch { zoom.animateTo(target, spring(dampingRatio = 0.8f, stiffness = 420f)) }
                             launch { panX.animateTo(focus.x, spring(dampingRatio = 0.8f, stiffness = 420f)) }
                             launch { panY.animateTo(focus.y, spring(dampingRatio = 0.8f, stiffness = 420f)) }
@@ -267,7 +237,6 @@ private fun PhotoPage(
             model = request,
             contentDescription = item.displayName,
             contentScale = ContentScale.Fit,
-            colorFilter = filter,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
@@ -277,13 +246,6 @@ private fun PhotoPage(
                     scaleY = zoom.value
                     translationX = panX.value
                     translationY = panY.value
-                    rotationZ = rotation
-                    if (((rotation / 90f).toInt() % 2) != 0 && item.width > 0 && item.height > 0) {
-                        // A quarter turn has to shrink to stay inside the screen.
-                        val fit = min(size.width, size.height) / max(size.width, size.height)
-                        scaleX *= fit.coerceAtLeast(0.5f)
-                        scaleY *= fit.coerceAtLeast(0.5f)
-                    }
                 }
         )
     }

@@ -4,6 +4,11 @@ import com.example.data.Library
 import com.example.data.MediaItem
 import com.example.data.MediaOverride
 import com.example.data.MediaSearch
+import com.example.data.Story
+import com.example.data.dateLabel
+import com.example.ui.editor.ColorMath
+import com.example.ui.editor.CropRect
+import com.example.ui.editor.EditValues
 import com.example.ui.timeline.Density
 import com.example.ui.timeline.Mosaic
 import com.example.ui.timeline.TimelineRow
@@ -90,5 +95,58 @@ class MosaicTest {
         assertEquals(listOf("2"), MediaSearch.filter(items, "CUMPLEANOS", zone).map { it.id })
         assertEquals(listOf("3"), MediaSearch.filter(items, "vídeo", zone).map { it.id })
         assertTrue(MediaSearch.filter(items, "   ", zone).isEmpty())
+    }
+
+    @Test
+    fun `stories use memories first and cap their slides`() {
+        val visible = (0 until 40).map { photo(it, "2024-03-14") }
+        val memories = Library.memoriesOf(visible, LocalDate.parse("2026-03-14"), zone)
+        val stories = Library.storiesOf(memories, visible.take(3), visible, LocalDate.parse("2026-03-14"))
+        assertEquals(listOf("memory-2", "surprise", "favorites"), stories.map { it.id })
+        assertEquals(12, stories.first().items.size)
+        assertEquals(3, stories.last().items.size)
+        // The surprise is stable for the whole day.
+        val again = Library.storiesOf(memories, emptyList(), visible, LocalDate.parse("2026-03-14"))
+        assertEquals(stories[1].items, again[1].items)
+    }
+
+    @Test
+    fun `story date label shows the tightest range`() {
+        fun label(vararg dates: String) = Story("s", "t", "u", dates.mapIndexed { i, d -> photo(i, d) }).dateLabel(zone)
+        assertEquals("4 NOV 2024", label("2024-11-04"))
+        assertEquals("2-6 NOV 2024", label("2024-11-06", "2024-11-02"))
+        assertEquals("MAR-NOV 2024", label("2024-03-01", "2024-11-02"))
+        assertEquals("2019-2024", label("2019-03-01", "2024-11-02"))
+    }
+
+    @Test
+    fun `color matrices compose like applying them in sequence`() {
+        val first = ColorMath.contrastBrightness(1.2f, 0.1f)
+        val second = ColorMath.warmth(0.1f)
+        val rgb = floatArrayOf(100f, 150f, 200f)
+        fun apply(m: FloatArray, c: FloatArray) = FloatArray(3) { r ->
+            m[r * 5] * c[0] + m[r * 5 + 1] * c[1] + m[r * 5 + 2] * c[2] + m[r * 5 + 3] * 255f + m[r * 5 + 4]
+        }
+        val stepwise = apply(second, apply(first, rgb))
+        val combined = apply(ColorMath.then(first, second), rgb)
+        for (i in 0..2) assertEquals(stepwise[i], combined[i], 0.01f)
+        assertTrue(EditValues().isOriginal)
+        ColorMath.of(EditValues()).zip(ColorMath.identity().toList()).forEach { (a, b) -> assertEquals(b, a, 0.0001f) }
+    }
+
+    @Test
+    fun `crop stays inside the image and keeps a locked ratio`() {
+        assertEquals(CropRect(), CropRect.centered(null, 1.5f))
+        val square = CropRect.centered(1f, 2f)
+        assertEquals(0.5f, square.width, 0.001f)
+        assertEquals(1f, square.height, 0.001f)
+        val moved = CropRect(0.1f, 0.1f, 0.5f, 0.5f).moved(-1f, 2f)
+        assertEquals(0f, moved.left, 0.001f)
+        assertEquals(1f, moved.bottom, 0.001f)
+        val resized = CropRect.resized(square, 1, 1, 0.9f, 0.9f, 1f, 2f)
+        assertEquals(2f, (resized.width * 2f) / resized.height, 1.01f)
+        assertTrue(resized.right <= 1f && resized.bottom <= 1.001f)
+        val free = CropRect.resized(CropRect(), 0, 0, 0.99f, 0.99f, null, 1f)
+        assertTrue(free.width >= CropRect.MIN - 0.001f && free.height >= CropRect.MIN - 0.001f)
     }
 }
