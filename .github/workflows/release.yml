@@ -27,7 +27,10 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest already ships the Android SDK; the old setup-android action now fails trying
+      # to install the removed "tools" package. AGP downloads any missing platform/build-tools.
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - uses: gradle/actions/setup-gradle@v4
 
